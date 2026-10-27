@@ -1,8 +1,11 @@
 # 交接文件（单向：开发指挥 Agent → 测试执行 Agent）
 
-- 最后更新：2026-10-27 15:30
+- 最后更新：2026-10-27 15:45
 - 仓库：`https://github.com/liangxu2000/mooncake-nof-bench-handover`（public，可匿名拉取，无需凭据）
-- 拉取：`git pull`（首次 `git clone`）
+- 首次：`git clone https://github.com/liangxu2000/mooncake-nof-bench-handover.git`
+- 之后每轮：`cd mooncake-nof-bench-handover && git pull`
+- 权限：**只 pull，不要 push**；本仓不接收反向提交
+- 回执：按《接管说明》§1.3 格式整理后交给用户转交
 
 ## 协作约定
 
@@ -57,6 +60,17 @@
 【产物】results/e3a_copy_source_20261028.csv（新增）+ 台账 §29 追加；回报按 §1.3 格式。
 【失败处理】c 也明显变慢 → 停手回报；判据 1 不满足 → 停手，不自动重启。
 ```
+
+## 执行顺序（建议）
+
+1. **先读文件、后动手**：`git pull` 后确认任务状态为"待执行"；如与本仓描述和本地实测冲突，以本地原始证据为准，并回报冲突点。
+2. **补资料**：按上方"资料请求"1→4 补齐；能直接传文件的传文件，不能传的内嵌关键原文（启动命令/env 必须逐行原文）。
+3. **判据 1 快照核查**：用现有只读探测脚本 + 现查，不重启任何服务；任何一项不满足就停手回报。
+4. **判据 2 c/d 交替**：顺序建议 `c,d,c,d,c,d`；每点 60 s，点间留 10–30 s；每轮记 GiB/s、avg/p99、三计数器、节点 load。
+5. **判据 3 池属性**：在任一轮 d 运行中抓（进程存活 60 s 足够）；贴 `/proc/<pid>/maps` 与 `numa_maps` 原始行。
+6. **判据 4 拷贝标定**：在 E2 的 nvcc 程序上加三种源（pinned / pageable / 2 GB 大块按 NUMA0 与非 NUMA0），各 300 次；无 libnuma 就用 `numactl --membind`。
+7. **回报**：按 §1.3 五段式；每个判据附原始输出片段；CSV 落 `results/e3a_copy_source_20261028.csv` 并追加台账 §29。
+8. **停手条件**：判据 1 不满足；c 明显变慢；任何步骤需要重启或改驱动 —— 先回报等批准。
 
 ## 回报要求
 
