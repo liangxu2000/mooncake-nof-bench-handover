@@ -54,11 +54,19 @@
 
 | 编号 | 日期 | 内容 | 状态 | 回执摘要 |
 | --- | --- | --- | --- | --- |
-| E3-A | 2026-10-27 | 暂存池 NUMA/pin 定位 + 拷贝源标定 | 执行中（修订 v2） | 今日 E1 缺 `--local_buffer_size`（默认 512M）；配对 A/B 待跑 |
+| E3-A | 2026-10-27 | 暂存池 NUMA/pin 定位 + 拷贝源标定 | 已关闭 | H1 成立：池落点决定 d 延迟；2G@N2 1060 / 512M@N0 921 µs；池大小非主因；4 个补充点因 NoF 掉链作废 |
+| E3-B | 2026-10-27 | 绑核控制池落点 + 结果归档/xlsx 副本 | 待执行 | — |
 
 ---
 
-# E3-A（执行中 · 修订 v2）
+# E3-A（已关闭 · 修订 v2）
+
+> 回执摘要（2026-10-27）：
+> - H1 成立：池 NUMA 落点决定 d 延迟；池大小不是主因。
+> - d(2G)@N2 中位 1060 µs；d(512M)@N0 中位 921 µs（r1 895）。
+> - 标定：pinned 334 / 4K@N0 411.5 / 4K@N2 501.2 µs；跨 NUMA +90，4K/TLB +77。
+> - 4 个补充点因 NoF 控制器掉链作废；r3 双慢窗口存疑；本轮未跑 b。
+> - 代码事实与段泄漏见 E3-B 背景。
 
 > 修订 v2（2026-10-27）：测试回执发现今日 E1 未传 `--local_buffer_size`（默认 512 MB），
 > 而昨日 d=878 的 CSV 明写 `local_buffer_size=2G`。两者不是同一口径，原判据 2/3 的跑法
@@ -124,9 +132,67 @@
 - 若环境无 libnuma，可用 `numactl --membind=0` / `--membind=<非0>` 跑同一个二进制
 - 本轮不需要回答"怎么修"，只要把 4c 与 4a 的差距、以及池子实际落点报清楚
 
-## 下一步（由开发指挥 Agent 负责）
+## 下一步
 
-- E3-B（待 E3-A 回执后下发）：results 目录归档 + 交付表副本规范 + 时延口径；同时请测试 Agent 贴出
-  xlsx 表头（列名+单位）与 a/b/c/d 四行现有值的文本，用于对齐时延列。
-- 若 `d(2G)` 回到 ~878 µs：说明 15% 退化是缺 `--local_buffer_size` 的口径问题，P0 降级；用 2G 口径重算 E3，确认无收益后直接转入全表同快照重跑。
-- 若 `d(2G)` 仍 ~1050 µs：结合 4a/4c 标定与池 NUMA 落点判断，出"池绑 NUMA0 / pin 池"的最小补丁；重编后先测 b/d 1/1，无收益（<5%）即回退。
+见下方 E3-B。
+
+---
+
+# E3-B（待执行）
+
+> 承接 E3-A：H1 成立——暂存池的 NUMA 落点决定 d 的延迟，池大小不是主因。
+> 本轮把落点变成可控变量，并验证运行时绑核不伤害其他 case，据此确定最终测量协议。
+
+## 背景（E3-A 已确认）
+
+1. 配对 A/B：d(2G) 中位 1060 µs（池落 N2）；d(512M) 中位 921 µs（落 N0）；r3 双慢与 NoF 控制器掉链同一窗口，作废。
+2. 拷贝标定：pinned 334.0 / 4K@N0 411.5 / 4K@N2 501.2 µs；跨 NUMA +90 µs，4K/TLB +77 µs；观测差 165–167 µs 可被解释。
+3. **池落点可控、不用改代码**：`--local_buffer_size` 池在 `protocol=ub` 下走
+   `ub_allocate_memory` → `ub_allocate_memory_onnode(..., -1)` → `numa_alloc_local`，
+   落点由**分配线程当时所在 CPU 的 NUMA** 决定。运行时 `numactl --cpunodebind=0`
+   可把分配线程固定在 N0，从而控制池落点。
+4. **段泄漏有解**：bench 默认 `--global_segment_size=4GB`，staging 模式没有清零
+   （只有 gdr-peermem 模式强制 0）；每个 bench 进程会 mount 一个 4GB 段，TERM 后留
+   0 容量残留段（18→31）。read-only 场景应显式 `--global_segment_size=0`。
+5. 修正：GPU 在 `0000:27:00.0`（NUMA0）；`0000:23:00.0` 是 iBMC VGA。bench 跑在
+   initiator 节点（有 V100 的那台）。
+
+## 指令（§1.2 模板）
+
+```
+【目标】验证 numactl --cpunodebind=0 能否把暂存池稳定落到 N0，且不伤害 c/b；据此确定最终测量协议。
+【范围】initiator 节点（GPU 侧）；target 节点只做 target；不改 Mooncake 源码。
+【允许】改本地脚本（--global_segment_size=0、--local_buffer_size=2G、可选 numactl 前缀）；
+        跑点；读 /proc；清理我们自己的残留段（先回报路径）。
+【需报批】重启 master/client/target、改驱动、动共享面。
+【判据】(每条附原始输出)
+1) 健康：NoF 控制器/段状态、dmesg nvme 错误、master 段数与容量、GDR 模块。
+2) 10 个点（1/1，4 MB，60 s，--local_buffer_size=2G）：
+   - d：默认 ×3 / numactl --cpunodebind=0 ×3，交替；
+   - c：默认 ×1 / 绑 N0 ×1；
+   - b：默认 ×1 / 绑 N0 ×1。
+   每点：GiB/s、avg/p50/p99/max、三计数器、initiator load、池落点（numa_maps 相关行）。
+3) 段泄漏：加 --global_segment_size=0 后跑 2 个点，master 段数不增长；若仍增长，报残留段 ID 与容量。
+4) 落点必须逐点抓，不能只抓一轮。
+【产物】results/R05_20261028_E3B_绑核控制/（CSV + maps + meta.md）
+【失败处理】NoF 掉链/环境退化 → 停手，作废该窗口；绑 N0 后 c 变慢 >5% → 停手，
+            转"只绑池不绑线程"的最小补丁方案。
+```
+
+## 执行顺序
+
+1. 健康检查 + 段数基线。
+2. 脚本改动（≤15 行）：`--global_segment_size=0`、`--local_buffer_size=2G`、可选 `numactl` 前缀；备份；`bash -n`。
+3. 跑 2 个点验证段不增长。
+4. 跑 10 点矩阵，逐点抓落点。
+5. Part 2（归档，可在跑点间隙做）：
+   - 按「结果与交付约定」整理 R01–R05、`INDEX.md`、`meta.md`；
+   - 复制原 xlsx 到 `测试相关资料/交付表/benchmark_Mooncake_R01_20261026.xlsx`，原表不动；
+   - 以文本贴出 xlsx 表头（列名+单位）与 a/b/c/d 四行现有值（每行 ≤1 行）。
+6. 回执（§1.3）。
+
+## 决策规则
+
+- 绑 N0 后池稳定落 N0、d 方差收敛、c 不退化 → 采用 `numactl --cpunodebind=0` 作为最终全表测量的固定协议。
+- 绑 N0 伤 c（>5%）→ 不用进程级绑核；下一步只把池绑到 N0（`ub_allocate_memory_onnode` + env，最小补丁），另立任务。
+- 段泄漏未解决 → 先不跑 a/b 的全表；c/d 不受影响。
