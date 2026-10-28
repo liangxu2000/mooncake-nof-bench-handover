@@ -69,6 +69,7 @@
 | E3-G | 2026-10-27 | 8MB b 16/16 单格修复（UB staging pool 4G） | 已关闭 | 4G 修复成功：3 轮 failed=0，9.43 GiB/s / 211648 µs；R10 已更新，回读 OK=16 |
 | E3-H | 2026-10-27 | 下载第二次测试分析报告到本地归档 | 待执行（报告已更新，需重拷） | — |
 | E3-I | 待确认 | 4MB 1/1 时延打点拆分（query/read/copy/free） | 待确认 | — |
+| E3-J | 2026-10-27 | PCIe 链路核对（V100 / UB NIC，只读） | 待执行 | — |
 
 ---
 
@@ -501,3 +502,24 @@
 - 打点会引入微小开销；在 1/1 下可忽略，但需在 meta 里注明。
 - 若 copy 实测 ≈335 且 read_host ≈ read_hbm − 79，则 b 656 的拆分闭环；
   若 copy 实测 <266，先查是否把 read 的一部分算进了 copy。
+
+---
+
+# E3-J（待执行）· PCIe 链路核对（只读）
+
+> 目的：确认 V100 与 UB NIC 的 PCIe 代际/宽度/当前速率，决定 b/d 第一次 crossing 的下限。
+> 只读，不改环境。
+
+## 指令
+
+1) `lspci -Dnn` 找 V100（`0000:27:00.0`）与 UB NIC（`udmac0d1e2` 对应 BDF）；
+2) 对每个 BDF `lspci -vv -s <BDF>`，贴 `LnkCap` 与 `LnkSta` 原始行（Speed / Width）；
+3) 若中间有 PCIe switch / 上游桥，贴其 LnkCap/LnkSta；
+4) 只读，不改环境。
+
+## 判据/产物
+
+- GPU：LnkCap/LnkSta（预期 8 GT/s x16 / 8 GT/s x16）。
+- NIC：BDF + LnkCap/LnkSta（代际 / 宽度 / 当前速率）。
+- 结论一行：host→HBM 与 NIC→host 是否同为 PCIe 3.0 x16；若不同，给各自线速。
+- 台账 §38。
