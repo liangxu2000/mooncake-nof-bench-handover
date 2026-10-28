@@ -66,7 +66,7 @@
 | E3-D | 2026-10-27 | 最终 16 点全表（修订 v2） | 已关闭 | 40/40 有效、40/40 落 N0、canary 漂移 ≤0.65%、NoF 掉链 1/41 |
 | E3-E | 2026-10-27 | 4MB 结果填表（用户清空副本） | 已关闭 | 4MB 表 16×11 填完，回读 OK=16 / MISMATCH=0 |
 | E3-F | 2026-10-27 | 8MB 全量复测 + 填表 | 已关闭 | 8MB 表填完；b 16/16 91% TRANSFER_FAIL，待 E3-G 修复 |
-| E3-G | 2026-10-27 | 8MB b 16/16 单格修复（UB staging pool 4G） | 待执行 | — |
+| E3-G | 2026-10-27 | 8MB b 16/16 单格修复（UB staging pool 4G） | 已关闭 | 4G 修复成功：3 轮 failed=0，9.43 GiB/s / 211648 µs；R10 已更新，回读 OK=16 |
 
 ---
 
@@ -389,7 +389,12 @@
 
 ---
 
-# E3-G（待执行）· 8MB b 16/16 单格修复
+# E3-G（已关闭）· 8MB b 16/16 单格修复
+
+> 回执摘要：1G 默认 → 91% TRANSFER_FAIL；4G → 3 轮 failed=0、9.43/9.47/9.43 GiB/s；
+> 8G 同样成功，4G 为最小可用值。8MB 表 R10 已更新（9.43 GiB/s / 211648 µs），
+> 其余 15 行未动，回读 OK=16 / MISMATCH=0。211.6 ms 是 2 GiB 在飞的排队时长
+> （Little's law 2 GiB ÷ 9.43 GiB/s ≈ 212 ms），不是退化。
 
 > E3-F 唯一问题：8MB b 16/16 有 91% TRANSFER_FAIL，4 次重试一致，4G/8G 客户端池均无效。
 > 根因已定位（代码）：UB transport 的 staging pool 默认 1 GiB
@@ -418,3 +423,30 @@
 - 这是环境变量，不改代码、不重编；UB staging pool 在进程启动时分配，重启 bench 进程即可生效。
 - 4G 池在 N0 上分配（numa_alloc_local + cpunodebind=0），node4 内存充足。
 - 该修复只影响 b 16/16；4MB 轮与 8MB 其他 15 格不动。
+
+---
+
+# 最终交付状态（2026-10-27）
+
+| 轮次 | 批次 | 格数 | 有效 | 表 | 回读校验 |
+|---|---|---|---|---|---|
+| 4MB | R08 | 16 | 16/16 | `4MB-...xlsx` | OK=16 / MISMATCH=0 |
+| 8MB | R09 | 16 | 16/16（E3-G 修复 b 16/16） | `8MB-...xlsx` | OK=16 / MISMATCH=0 |
+
+## 最终口径
+
+- 4MB：`--value_size=4194304 --num_keys=100 --local_buffer_size=2G --global_segment_size=0`
+  + `numactl --cpunodebind=0`（key 不带 `_vs` 后缀）。
+- 8MB：`--value_size=8388608 --num_keys=100 --local_buffer_size=4G --global_segment_size=0
+  --key_include_value_size=true` + `MC_UB_STAGING_POOL_SIZE=4G` + `numactl --cpunodebind=0`。
+
+## 交付说明必写
+
+1. 8MB b 16/16 的 211.6 ms 是 2 GiB 在飞的排队时长（Little's law 吻合），不是退化；
+   不要与失败态的 71 ms 对比。
+2. 4MB R08 与首轮 R01、日报里的第一轮数据不是同一批，不可混用。
+3. `--key_include_value_size=true` 与 `--verify=true` 互斥；8MB 完整性用
+   “写 100/100 + 四路径抽 key + 全量回读”三证。
+4. 8MB 的 staging 路径依赖 `MC_UB_STAGING_POOL_SIZE=4G`；默认 1G 会在 16×16×8MB 下溢出。
+5. b 的路径计数器（cuda_io/host_io）均为 0，路径证明靠 `--gpu_mode=staging` + 延迟量级；
+   既有埋点缺口。
