@@ -69,7 +69,7 @@
 | E3-G | 2026-10-27 | 8MB b 16/16 单格修复（UB staging pool 4G） | 已关闭 | 4G 修复成功：3 轮 failed=0，9.43 GiB/s / 211648 µs；R10 已更新，回读 OK=16 |
 | E3-H | 2026-10-27 | 下载第二次测试分析报告到本地归档 | 待执行（报告已更新，需重拷） | — |
 | E3-I | 待确认 | 4MB 1/1 时延打点拆分（query/read/copy/free） | 待确认 | — |
-| E3-J | 2026-10-27 | PCIe 链路核对（V100 / UB NIC，只读） | 待执行 | — |
+| E3-J | 2026-10-28 | PCIe 链路核对（V100 / UB NIC，只读） | 已关闭 | GPU 3.0 x16；Mellanox 4.0 x8；UB 不在 PCIe；12.69 是 UB 上限 |
 
 ---
 
@@ -453,13 +453,17 @@
 4. 8MB 的 staging 路径依赖 `MC_UB_STAGING_POOL_SIZE=4G`；默认 1G 会在 16×16×8MB 下溢出。
 5. b 的路径计数器（cuda_io/host_io）均为 0，路径证明靠 `--gpu_mode=staging` + 延迟量级；
    既有埋点缺口。
+6. **12.69/12.68 GiB/s 是 UB 链路上限**（E3-J：`udmac0d1e2` 走 UB，不走 PCIe）；
+   PCIe 3.0 x16 的 14.67 GiB/s 不是瓶颈；不要写“PCIe 87%”。
+7. 4MB 1/1 的 b 656 = UB 308 + PCIe host→HBM 拷贝 266 + 控制 92；
+   组长的 500+ 对应拷贝 100 µs（42 GB/s），超过 PCIe 3.0 x16，物理上不可能。
 
 ---
 
 # E3-H（待执行）· 下载分析报告到本地
 
 > 报告已在 git 仓：`reports/第二次测试结果分析报告.md`（与本文件同一仓，已 push）。
-> 报告已于 2026-10-27 更新（新增 §3.5：4MB/1/1 单请求时延拆解）；若已归档旧版，请重新复制覆盖。
+> 报告已更新（E3-J 修正了 PCIe/UB 归因，§2.4/§3.5 重写）；若已归档旧版，请重新复制覆盖。
 
 ## 指令
 
@@ -505,7 +509,14 @@
 
 ---
 
-# E3-J（待执行）· PCIe 链路核对（只读）
+# E3-J（已关闭）· PCIe 链路核对（只读）
+
+> 回执摘要：GPU `0000:27:00.0` PCIe 3.0 x16（8 GT/s x16，15.75 GB/s）；
+> Mellanox CX-6 Dx `0000:a6:00.0` PCIe 4.0 x8（16 GT/s x8，主板仅布 8 lane，15.75 GB/s）；
+> **`udmac0d1e2` 不是 PCIe 设备**，位于 `ub_bus_controller0`，驱动 `ubase`，
+> port0 active_speed=12 / width=4；数据通路 `--protocol=ub` 走 UB。
+> **12.69/12.68 GiB/s 是 UB 链路上限，不是 PCIe 86.5%**；PCIe 3.0 x16 只在
+> host→HBM 拷贝和 GPU 侧出现。Mellanox 不是 Mooncake 数据通路。
 
 > 目的：确认 V100 与 UB NIC 的 PCIe 代际/宽度/当前速率，决定 b/d 第一次 crossing 的下限。
 > 只读，不改环境。
