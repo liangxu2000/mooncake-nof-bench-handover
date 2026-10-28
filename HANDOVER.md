@@ -67,12 +67,12 @@
 | E3-E | 2026-10-27 | 4MB 结果填表（用户清空副本） | 已关闭 | 4MB 表 16×11 填完，回读 OK=16 / MISMATCH=0 |
 | E3-F | 2026-10-27 | 8MB 全量复测 + 填表 | 已关闭 | 8MB 表填完；b 16/16 91% TRANSFER_FAIL，待 E3-G 修复 |
 | E3-G | 2026-10-27 | 8MB b 16/16 单格修复（UB staging pool 4G） | 已关闭 | 4G 修复成功：3 轮 failed=0，9.43 GiB/s / 211648 µs；R10 已更新，回读 OK=16 |
-| E3-H | 2026-10-27 | 下载第二次测试分析报告到本地归档 | 待执行（报告已更新，需重拷） | — |
+| E3-H | 2026-10-27 | 下载第二次测试分析报告到本地归档 | 待执行（第 4 次重拷） | 第三次重拷是 E3-L2 前版本；E3-L2 后报告再更新，需重新复制 |
 | E3-I | 2026-10-28 | 4MB 1/1 时延打点拆分（query/read/copy/free） | 已关闭 | control 41–54；copy 416（pageable 384+32）；b−a 259；UB 178/337；12.69 = PCIe HBM write |
 | E3-J | 2026-10-28 | PCIe 链路核对（V100 / UB NIC，只读） | 已关闭 | GPU 3.0 x16；Mellanox 4.0 x8；UB 不在 PCIe；12.69 是 PCIe HBM write、b UB 22.5 |
 | E3-K | 2026-10-28 | UB 带宽 / urma_check.sh 单位核对 | 已关闭 | 46.4–46.9 GiB/s；脚本 MiB/s 无换算；E3-L 更正：-Q 是 perftest 攒批；b 21.9 单请求；node2 不再独占 |
 | E3-L | 2026-10-28 | 4 MiB UB CQ moderation 核对 | 已关闭（源码） | CQ moderation 假设推翻；Mooncake 无设备 moderation；perftest -Q 是 post-list 攒批；b 21.9 单请求 |
-| E3-L2 | 待执行（需独占） | b 1/1 在飞 1→2→4 + b 16/16 UB 段 | 待执行（需独占） | — |
+| E3-L2 | 2026-10-28 | b 1/1 在飞 1→2→4 + b 16/16 UB 段 | 已关闭 | UB 恒 180–181（预期 178→120→90 被否）；copy 414→6589，聚合 ~9.5；b 下限 594、pin 569；500+ 不可达；16/16 8.67 可复现 |
 
 ---
 
@@ -444,7 +444,7 @@
 - 4MB：`--value_size=4194304 --num_keys=100 --local_buffer_size=2G --global_segment_size=0`
   + `numactl --cpunodebind=0`（key 不带 `_vs` 后缀）。
 - 8MB：`--value_size=8388608 --num_keys=100 --local_buffer_size=4G --global_segment_size=0
-  --key_include_value_size=true` + `MC_UB_STAGING_POOL_SIZE=4G` + `numactl --cpunodebind=0`。
+  --key_include_value_size=true` + `MC_UB_STAGING_POOL_SIZE=4294967296` + `numactl --cpunodebind=0`。
 
 ## 交付说明必写
 
@@ -453,7 +453,8 @@
 2. 4MB R08 与首轮 R01、日报里的第一轮数据不是同一批，不可混用。
 3. `--key_include_value_size=true` 与 `--verify=true` 互斥；8MB 完整性用
    “写 100/100 + 四路径抽 key + 全量回读”三证。
-4. 8MB 的 staging 路径依赖 `MC_UB_STAGING_POOL_SIZE=4G`；默认 1G 会在 16×16×8MB 下溢出。
+4. 8MB 的 staging 路径依赖 `MC_UB_STAGING_POOL_SIZE=4294967296`；默认 1G 会在 16×16×8MB 下溢出。
+   写 `4G` 会被 `std::stoull` 解析成 4（4 MiB 池），导致 94% `Memory` 失败且静默降级。
 5. b 的路径计数器（cuda_io/host_io）均为 0，路径证明靠 `--gpu_mode=staging` + 延迟量级；
    既有埋点缺口。
 6. **12.69/12.68 GiB/s 是 PCIe 3.0 x16 HBM write 的 86.5%**（E3-I）；UB 是传输，
@@ -462,16 +463,18 @@
    组长的 500+ 假设 copy ~266，实际 416，1/1 不可达。
 8. UB 单向峰值 **46.4–46.9 GiB/s**（E3-K）；b 1/1 的 UB 178 µs = 21.9 GiB/s 是单请求带宽
    （峰值 47%），不是上限被压制；比带宽用 16/16。E3-L 更正：`-Q` 是 perftest 的 post-list 攒批，
-   Mooncake 不设设备 moderation。node2/node4 有他人 root perftest，不再独占。
-9. E3-L2（需独占）：b 1/1 在飞 1→2→4（UB 178→~120→~90）+ b 16/16 UB 段 vs 46.4；
-   不改代码；等用户申请独占。
+   Mooncake 不设设备 moderation。E3-K 曾发现 node2/node4 有他人 root perftest；独占状态需用户确认。
+9. E3-L2 已关闭：UB 段 180–181 µs 不随并发下降；copy 414→6589 µs，聚合 ~9.5 GiB/s；
+   b 1/1 下限 594 µs（pin 515+控制≈569），500+ 不可达；b 16/16 8.67 可复现。
+   原“UB 178→120→90”的预期错误，不要再引用。
 
 ---
 
 # E3-H（待执行）· 下载分析报告到本地
 
 > 报告已在 git 仓：`reports/第二次测试结果分析报告.md`（与本文件同一仓，已 push）。
-> 报告已更新（E3-L 更正 CQ moderation / b 21.9 单请求 / E3-L2）；若已归档旧版，请重新复制。
+> 报告已更新（E3-L2：UB 180 恒定 + copy 墙 + 500+ 不可达）；第三次重拷是 E3-L2 前版本，
+> 需第 4 次复制。
 
 ## 指令
 
@@ -611,21 +614,41 @@
 
 ---
 
-# E3-L2（待执行 · 需独占）· b 1/1 在飞 1→2→4 + b 16/16 UB 段
+# E3-L2（已关闭）· b 1/1 在飞 1→2→4 + b 16/16 UB 段
 
-> E3-L 已推翻 CQ moderation 假设；b 21.9 是单请求带宽（1 个 4 MiB 在飞），
-> perftest 峰值 46.4 是饱和值；1/1 没有流水线掩盖。不改代码，需用户申请独占。
+> 回执摘要（2026-10-28 17:32）：
+> - 1→2→4→16 在飞：UB 段 180/180/181/181 µs，**不降**；原预期 178→120→90 被否。
+> - copy 段 414/603/1460/6589 µs；copy 聚合 9.44/12.96/10.70/9.49 GiB/s，高并发停在 ~9.5。
+> - b 1/1 648 µs = UB 180 + copy 414 + query 42 + residual 12；R08 656。
+> - b 16/16（16×16）115145 µs / 8.67 GiB/s（8.66/8.69/8.67），R08 8.62（−0.6%）。
+> - 下限：UB 180 + copy 414 = 594 µs；pin 335 → 515 + 控制 ≈ 569；500+ 不可达。
+> - 两条坑：batch>1 埋点失效；`MC_UB_STAGING_POOL_SIZE` 只认字节（`4G`→4）。
+> - 产物 R14_20261028_E3L2；台账 §43；报告第三次重拷已归档（E3-L2 前版本）。
 
-## 方案
+## 判据回答
 
-A) b 1/1 把在飞请求 1→2→4（batch 2/4 或 2/4 threads × batch 1），
-   看 UB 段是否 178→~120→~90 µs；
-B) 直接测 b 16/16 的 UB 段饱和态，和 46.4 GiB/s 比。
+| 问题 | 结论 |
+| --- | --- |
+| UB 是否随并发下降 | 否，恒 180–181 µs |
+| b 21.9 是否被压制 | 否，1 个 4 MiB 在飞的 Little's law 值；峰值 46.4–46.9 |
+| copy 是否瓶颈 | 是，聚合 ~9.5 GiB/s，吞吐 2 并发即饱和 |
+| b 650→561 | 否；UB 180 + copy 414 已 594 |
+| 500+ 是否可达 | 否；pin 后 ≈569；需改 copy 通路或绕过 staging |
+| 16/16 基线 | 8.67 vs R08 8.62，可复现 |
 
-## 判据
+## 复现坑
 
-- 每点 b 1/1/1/2/1/4 的 UB 段、copy 416、总时延；Little's law。
-- b 16/16 的 UB 段 / 总 115.9 ms；UB 是否接近 46.4；copy 416。
-- 结论：b 21.9 是单请求带宽还是被压制；b 650→~561 是否可达；500+ 是否可达
-  （copy 416 仍是主成本）。
-- 产物 R14；台账 §43。
+1) batch>1 走 `batch_get_into`，E3-I 的 `get_into/transfer_data/scatter_copy` 计数为 0；
+   分段只能用 batch=1。摘录：`b=1 7065 7065 140518；b=2 1 1 5；b=16 0 0 0`。
+2) `MC_UB_STAGING_POOL_SIZE` 只认纯数字字节；`4G` → `stoull("4G")` = 4 → 4 MiB 池 →
+   94% `Memory` 失败（failed: 3322314），日志 `registered CPU staging pool ... size=4194304`；
+   必须写 `4294967296`。不抛异常、静默降级。
+
+## 可选下一步：E3-M（pinned staging A/B，待用户确认）
+
+- 目的：验证 copy 的 ~9.5 GiB/s 墙是否来自 pageable（每次 pin/unpin）。
+- 改动：UB staging 池分配后加 `cudaHostRegister`（env 门控，只本地验证、不提交上游）；
+  析构时 `cudaHostUnregister`。
+- 判据：copy 414→接近 335；b 1/1 650→~569；b 16/16 8.67→是否向 11.7–13 GiB/s 靠。
+- 若仍 ~9.5：墙在 copy 引擎/并发提交方式，需 dev 侧改（多流 / DMA / 分块重叠）。
+- 不做也不影响交付；只有它能把 b 的吞吐往上抬。
