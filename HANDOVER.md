@@ -70,7 +70,8 @@
 | E3-H | 2026-10-27 | 下载第二次测试分析报告到本地归档 | 待执行（报告已更新，需重拷） | — |
 | E3-I | 2026-10-28 | 4MB 1/1 时延打点拆分（query/read/copy/free） | 已关闭 | control 41–54；copy 416（pageable 384+32）；b−a 259；UB 178/337；12.69 = PCIe HBM write |
 | E3-J | 2026-10-28 | PCIe 链路核对（V100 / UB NIC，只读） | 已关闭 | GPU 3.0 x16；Mellanox 4.0 x8；UB 不在 PCIe；12.69 是 PCIe HBM write、b UB 22.5 |
-| E3-K | 2026-10-28 | UB 带宽 / urma_check.sh 单位核对 | 待执行 | — |
+| E3-K | 2026-10-28 | UB 带宽 / urma_check.sh 单位核对 | 已关闭 | 46.4–46.9 GiB/s；脚本 MiB/s 无换算；4 MiB mod100 低估 11.7×；b 21.9；node2 不再独占 |
+| E3-L | 2026-10-28 | 4 MiB UB CQ moderation 核对 | 待执行（源码只读） | — |
 
 ---
 
@@ -458,16 +459,16 @@
    b 的 UB 读 178 µs ≈ 22.5 GiB/s；E3-J 的“UB 12.69”是过度归因。
 7. 4MB 1/1 的 b 650 = UB 178 + PCIe 拷贝 416（pageable 384+32）+ query 42 + residual 12；
    组长的 500+ 假设 copy ~266，实际 416，1/1 不可达。
-8. UB 峰值用户提供约 47 GiB/s（待 E3-K 核实单位）；E3-I 的 b UB 单请求 22.5 GiB/s；
-   若 47 成立，UB 不是瓶颈；若单位是 Gb/s（≈5.5 GiB/s），需重算。
+8. UB 单向峰值 **46.4–46.9 GiB/s**（E3-K）；E3-I 的 b UB 178 µs = 21.9 GiB/s（峰值的 47%）；
+   UB 不是瓶颈。4 MiB 必须 `-Q1`；CQ moderation=100 会低估 11.7×。
+   node2/node4 已发现他人 root perftest，不再独占；高精度测试前需确认。
 
 ---
 
 # E3-H（待执行）· 下载分析报告到本地
 
 > 报告已在 git 仓：`reports/第二次测试结果分析报告.md`（与本文件同一仓，已 push）。
-> 报告已更新（E3-I 打点后 §3.6 为最新，§3.5 为旧模型；§2.4 的 12.69 归因已修正；
-> UB 47 GiB/s 待 E3-K 核实）；若已归档旧版，请重新复制覆盖。
+> 报告已更新（E3-K：UB 46.4–46.9、b 21.9、CQ moderation、node2 占用）；若已归档旧版，请重新复制。
 
 ## 指令
 
@@ -549,7 +550,14 @@
 
 ---
 
-# E3-K（待执行）· UB 带宽 / urma_check.sh 单位核对
+# E3-K（已关闭）· UB 带宽 / urma_check.sh 单位核对
+
+> 回执摘要：UB 单向峰值 **46.4–46.9 GiB/s**（4 MiB -Q1：write 46.37 / read 46.91；
+> 64 KiB 46.92；双向 77.97；J=4 不高于 J=1）。工具列头 MB/sec 实为 MiB/s（1024²）；
+> `urma_check.sh` 不换算，47 = 48048.54 四舍五入，GiB/s 引用正确。
+> **CQ moderation=100 在 4 MiB 下低估 11.7×**（3.96 vs 46.37 GiB/s）；64 KiB 绕开；
+> 4 MiB 必须 `-Q1`。E3-I 的 b UB 178 = **21.9 GiB/s**（不是 22.5），为峰值 47%。
+> **node2/node4 发现他人 root perftest，node2 不再独占**；高精度测试前需用户确认。
 
 > 用户提供：GPU 节点 ↔ store 节点 UB 峰值约 47 GiB/s；
 > 脚本 `node1 bash /home/z00926396/tools/urma_check.sh`。只读/跑工具，不改环境。
@@ -567,3 +575,24 @@
 - 单位推导；至少 2 种方式/2 次；结论：UB 峰值 __ GiB/s；单请求 __；是否瓶颈。
 - 若无法访问 node1 / z00926396 / 脚本，停手回报，不 sudo/不改权限，由用户执行。
 - 台账 §40。
+
+---
+
+# E3-L（待执行 · 源码只读）· 4 MiB UB CQ moderation 核对
+
+> E3-K 发现：`urma_perftest` 默认 CQ moderation=100 在 4 MiB 下低估 11.7×
+> （4051.73 vs 47487.20 MiB/s）；64 KiB 不受影响。
+> Mooncake UB 路径的 4 MiB（E3-I b UB 178 µs = 21.9 GiB/s，约为 4 MiB -Q1 46.37 的 47%）
+> 是否也受 CQ moderation 影响？
+
+## 第一步：源码只读（不需要独占，现在可做）
+
+1) 读 Mooncake UB transport 的 CQ 创建 / moderation 配置（源码/日志/env），
+   确认是否 100/默认；
+2) 只在本地仓库 grep，不改代码、不跑测试；相关行 ≤20 行；台账 §42。
+
+## 第二步：A/B（等用户申请到独占后）
+
+- 若可配置，跑 b 1/1（或独立 4 MiB UB read）在 moderation 关闭/降低下的对比；
+- 评估 b UB 178 是否可从 21.9 提升到 46.4；b 650 是否可到 ~561；
+  500+ 是否可达（copy 416 仍是主成本）。
