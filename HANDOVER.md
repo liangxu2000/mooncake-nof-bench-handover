@@ -70,8 +70,9 @@
 | E3-H | 2026-10-27 | 下载第二次测试分析报告到本地归档 | 待执行（报告已更新，需重拷） | — |
 | E3-I | 2026-10-28 | 4MB 1/1 时延打点拆分（query/read/copy/free） | 已关闭 | control 41–54；copy 416（pageable 384+32）；b−a 259；UB 178/337；12.69 = PCIe HBM write |
 | E3-J | 2026-10-28 | PCIe 链路核对（V100 / UB NIC，只读） | 已关闭 | GPU 3.0 x16；Mellanox 4.0 x8；UB 不在 PCIe；12.69 是 PCIe HBM write、b UB 22.5 |
-| E3-K | 2026-10-28 | UB 带宽 / urma_check.sh 单位核对 | 已关闭 | 46.4–46.9 GiB/s；脚本 MiB/s 无换算；4 MiB mod100 低估 11.7×；b 21.9；node2 不再独占 |
-| E3-L | 2026-10-28 | 4 MiB UB CQ moderation 核对 | 待执行（源码只读） | — |
+| E3-K | 2026-10-28 | UB 带宽 / urma_check.sh 单位核对 | 已关闭 | 46.4–46.9 GiB/s；脚本 MiB/s 无换算；E3-L 更正：-Q 是 perftest 攒批；b 21.9 单请求；node2 不再独占 |
+| E3-L | 2026-10-28 | 4 MiB UB CQ moderation 核对 | 已关闭（源码） | CQ moderation 假设推翻；Mooncake 无设备 moderation；perftest -Q 是 post-list 攒批；b 21.9 单请求 |
+| E3-L2 | 待执行（需独占） | b 1/1 在飞 1→2→4 + b 16/16 UB 段 | 待执行（需独占） | — |
 
 ---
 
@@ -459,16 +460,18 @@
    b 的 UB 读 178 µs ≈ 22.5 GiB/s；E3-J 的“UB 12.69”是过度归因。
 7. 4MB 1/1 的 b 650 = UB 178 + PCIe 拷贝 416（pageable 384+32）+ query 42 + residual 12；
    组长的 500+ 假设 copy ~266，实际 416，1/1 不可达。
-8. UB 单向峰值 **46.4–46.9 GiB/s**（E3-K）；E3-I 的 b UB 178 µs = 21.9 GiB/s（峰值的 47%）；
-   UB 不是瓶颈。4 MiB 必须 `-Q1`；CQ moderation=100 会低估 11.7×。
-   node2/node4 已发现他人 root perftest，不再独占；高精度测试前需确认。
+8. UB 单向峰值 **46.4–46.9 GiB/s**（E3-K）；b 1/1 的 UB 178 µs = 21.9 GiB/s 是单请求带宽
+   （峰值 47%），不是上限被压制；比带宽用 16/16。E3-L 更正：`-Q` 是 perftest 的 post-list 攒批，
+   Mooncake 不设设备 moderation。node2/node4 有他人 root perftest，不再独占。
+9. E3-L2（需独占）：b 1/1 在飞 1→2→4（UB 178→~120→~90）+ b 16/16 UB 段 vs 46.4；
+   不改代码；等用户申请独占。
 
 ---
 
 # E3-H（待执行）· 下载分析报告到本地
 
 > 报告已在 git 仓：`reports/第二次测试结果分析报告.md`（与本文件同一仓，已 push）。
-> 报告已更新（E3-K：UB 46.4–46.9、b 21.9、CQ moderation、node2 占用）；若已归档旧版，请重新复制。
+> 报告已更新（E3-L 更正 CQ moderation / b 21.9 单请求 / E3-L2）；若已归档旧版，请重新复制。
 
 ## 指令
 
@@ -555,8 +558,9 @@
 > 回执摘要：UB 单向峰值 **46.4–46.9 GiB/s**（4 MiB -Q1：write 46.37 / read 46.91；
 > 64 KiB 46.92；双向 77.97；J=4 不高于 J=1）。工具列头 MB/sec 实为 MiB/s（1024²）；
 > `urma_check.sh` 不换算，47 = 48048.54 四舍五入，GiB/s 引用正确。
-> **CQ moderation=100 在 4 MiB 下低估 11.7×**（3.96 vs 46.37 GiB/s）；64 KiB 绕开；
-> 4 MiB 必须 `-Q1`。E3-I 的 b UB 178 = **21.9 GiB/s**（不是 22.5），为峰值 47%。
+> **E3-L 更正**：`-Q` 是 perftest 的**用户态 post-list 攒批**，不是设备 moderation；
+> Mooncake 不设设备 moderation；3.96 vs 46.37 的“11.7×”只对 perftest 成立；
+> E3-I 的 b UB 178 = **21.9 GiB/s**（不是 22.5），是单请求带宽（峰值 47%），不是被压制。
 > **node2/node4 发现他人 root perftest，node2 不再独占**；高精度测试前需用户确认。
 
 > 用户提供：GPU 节点 ↔ store 节点 UB 峰值约 47 GiB/s；
@@ -578,7 +582,15 @@
 
 ---
 
-# E3-L（待执行 · 源码只读）· 4 MiB UB CQ moderation 核对
+# E3-L（已关闭）· 4 MiB UB CQ moderation 核对
+
+> 回执摘要：E3-L 第一步（源码只读）推翻 E3-K 的 CQ moderation 机理——
+> Mooncake 全仓不设设备 moderation（无 `urma_modify_jfc`；`urma_jfc_cfg_t` 无 moderation 字段；
+> JFC depth=4096、jfce=NULL、纯轮询）；`urma_perftest` 的 `-Q` 是**用户态 post-list 攒批**，
+> 不是设备 moderation；3.96 vs 46.37 是攒批/发数节奏，E3-K 的“11.7× 低估”只对 perftest 成立。
+> **b 的 21.9 GiB/s 是单请求带宽**：perftest 饱和 46.37 → 84 µs/op；b 1/1 178 µs，
+> 178/84≈2.1；1/1 无流水线，Little's law 4 MiB/178=21.9，不是上限被压制。
+> 第二步原 A/B 无意义，改为 E3-L2。
 
 > E3-K 发现：`urma_perftest` 默认 CQ moderation=100 在 4 MiB 下低估 11.7×
 > （4051.73 vs 47487.20 MiB/s）；64 KiB 不受影响。
@@ -596,3 +608,24 @@
 - 若可配置，跑 b 1/1（或独立 4 MiB UB read）在 moderation 关闭/降低下的对比；
 - 评估 b UB 178 是否可从 21.9 提升到 46.4；b 650 是否可到 ~561；
   500+ 是否可达（copy 416 仍是主成本）。
+
+---
+
+# E3-L2（待执行 · 需独占）· b 1/1 在飞 1→2→4 + b 16/16 UB 段
+
+> E3-L 已推翻 CQ moderation 假设；b 21.9 是单请求带宽（1 个 4 MiB 在飞），
+> perftest 峰值 46.4 是饱和值；1/1 没有流水线掩盖。不改代码，需用户申请独占。
+
+## 方案
+
+A) b 1/1 把在飞请求 1→2→4（batch 2/4 或 2/4 threads × batch 1），
+   看 UB 段是否 178→~120→~90 µs；
+B) 直接测 b 16/16 的 UB 段饱和态，和 46.4 GiB/s 比。
+
+## 判据
+
+- 每点 b 1/1/1/2/1/4 的 UB 段、copy 416、总时延；Little's law。
+- b 16/16 的 UB 段 / 总 115.9 ms；UB 是否接近 46.4；copy 416。
+- 结论：b 21.9 是单请求带宽还是被压制；b 650→~561 是否可达；500+ 是否可达
+  （copy 416 仍是主成本）。
+- 产物 R14；台账 §43。
