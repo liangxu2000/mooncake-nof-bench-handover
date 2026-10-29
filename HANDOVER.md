@@ -76,6 +76,7 @@
 | E3-M | 2026-10-28 | 读取用户提供的对照 xlsx（只读、只回文本） | 已关闭 | 1 个 xlsx / 42 有效行；CPU-only 4MB Host→Host/NoF；独立验证 b/d 的 UB/NoF 段与 GPU 瓶颈；原始数据不落公开仓 |
 | E3-O | 2026-10-29 | RAID0 条带核对 + 512KB NoF chunk A/B | 已关闭 | 条带 64 KiB（SPDK Raid0，5× ES3000 V6）；128KB=2× 条带、512KB=8×；A/B 无收益（Δ≤0.63%），保持 128KB；R16 |
 | E3-P | 2026-10-29 | 补 R16 分段列定义 + c/d 关键行 | 已关闭 | 228/337 同埋点；337 是 E3-I 重尾批次，R16 225；copy/query 稳定；R16 CSV 无 residual/total；batch>1 仅 transfer_data 无埋点，scatter_copy 仍有 |
+| E3-Q | 2026-10-29 | 读取同事 stripe size 对照数据（xlsx） | 待执行 | — |
 
 ---
 
@@ -783,3 +784,31 @@
 - `summary.csv` 表头 + c/d 1/1、16/16 行；
 - 列定义 + E3-I/E3-O 差异说明；
 - 若某列在 R16 中不存在，明确说“没有”，不要猜。
+
+---
+
+# E3-Q（待执行）· 读取同事 stripe size 对照数据（xlsx）
+
+> 用户提供：`测试相关资料/同事B测试数据/` 下的 `stripesize影响*` 和 `test2.xlsx`
+> （test2 是 256KB stripe 的补测）。目的：看 stripe size 对 Host→NoF 的影响，
+> 和 R16 的 128KB/512KB 对照。
+> **只读、不改、不传文件、不跑测试；回执只发文本。**
+
+## 指令
+
+1) 列出目录下所有 `.xlsx`（文件名/大小/mtime/md5）；标出新增文件（`test.xlsx` 已读过）。
+2) 用 openpyxl（`read_only=True, data_only=True`）读 `stripesize影响*` 和 `test2.xlsx`：
+   - 所有 sheet 名（含隐藏）与维度；
+   - 所有非空单元格，按行导出；表小，**不要截断**；
+   - 合并单元格取左上角；公式取缓存值，无缓存值标 `<no cached value>`。
+3) 文本格式：`sheet_name<TAB>row_number<TAB>A=值<TAB>B=值...`；只要值，不要公式。
+4) 重点标注：stripe size（64/128/256/512/1024KB？）、SSD 数、Client 线程、4MB/8MB、
+   1/1、16/16、Avg/P99/Pmax、吞吐、单位；配置/说明/结论页全文。
+5) 如果 `test2.xlsx` 是 `test.xlsx` 的增量，说明新增了哪些行/列；如果是完整副本，说明差异。
+
+## 回执
+
+- 文件清单 + 每个 sheet 的维度；
+- `stripesize影响*` 全量文本；
+- `test2.xlsx` 全量文本（或新增部分 + 说明）；
+- 配置/说明页；哪些列是 stripe size、哪些是结果。
