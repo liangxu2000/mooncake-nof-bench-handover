@@ -77,7 +77,8 @@
 | E3-O | 2026-10-29 | RAID0 条带核对 + 512KB NoF chunk A/B | 已关闭 | 条带 64 KiB（SPDK Raid0，5× ES3000 V6）；128KB=2× 条带、512KB=8×；A/B 无收益（Δ≤0.63%），保持 128KB；R16 |
 | E3-P | 2026-10-29 | 补 R16 分段列定义 + c/d 关键行 | 已关闭 | 228/337 同埋点；337 是 E3-I 重尾批次，R16 225；copy/query 稳定；R16 CSV 无 residual/total；batch>1 仅 transfer_data 无埋点，scatter_copy 仍有 |
 | E3-Q | 2026-10-29 | 读取同事 stripe size 对照数据（xlsx） | 已关闭 | 两份文件不同层；256KB vs 512KB 线程不一致（E=32 vs 6），不受控；5SSD b1T1 128KB 拐点、64KB 差；客户端 chunk 保持 128KB；阵列 strip 改动需重建，未做 |
-| E3-R | 2026-10-29 | node2 Raid0 strip 64→256KB 重建可行性核查（只读） | 待执行 | — |
+| E3-R | 2026-10-29 | node2 Raid0 strip 64→256KB 重建可行性核查（只读） | 已关闭 | 可行；`-z 256` 合法；重建清空阵列；仅 1.2GB 自写数据、无他人数据；停机 5–10s；env 干净；做法 A（改脚本+重启）推荐；执行前再查占用 |
+| E3-S | 2026-10-29 | node2 Raid0 strip 64→256KB 重建 + c/d 测试 | 待用户授权 | — |
 
 ---
 
@@ -833,7 +834,15 @@
 
 ---
 
-# E3-R（待执行）· node2 Raid0 strip 64→256KB 重建可行性核查（只读）
+# E3-R（已关闭）· node2 Raid0 strip 64→256KB 重建可行性核查（只读）
+
+> 回执摘要（2026-10-29）：
+> - 可以做：`bdev_raid_create -z 256` 语法合法（256 是 2 的幂、≥ block size）；首次重建要在 RPC 返回处确认 `strip_size_kb=256`，不能只看退出码。
+> - 必须清空阵列：`superblock=false`，strip 不落盘；raid0 映射重排，旧数据不可读。
+> - 数据可丢：target 启动以来累计只写 1.2 GB（300 × 4 MiB），全是自己 prefill 的 4MB 对象，无他人数据，无需备份。
+> - 停机：target 5–10 s；到可跑点（prefill + 冒烟）约 2–3 min。
+> - env 干净：node4 没有导出 `MC_NOF_SUBMIT_CHUNK_BYTES`；`mc_bench_point.sh` 只在显式设置时透传；不要复用 `/tmp/e3o_ab.sh`（它写死 131072/524288）。
+> - 当前无 initiator、4421 无连接、无进程占用 5 块盘；node2 仍有 16 个登录会话，执行前必须再查一次占用。
 
 > 用户决定：后续 stripe size 用 **256KB**；客户端 chunk **4MB/8MB 都用默认 128KB**；不做 128KB 对照。
 > 当前 node2：5× 华为 ES3000 V6，vfio-pci 交给 SPDK，SPDK Raid0 bdev，`strip_size_kb=64`，38.4TB。
@@ -862,3 +871,43 @@
 - 预计停机时间。
 
 > 实际重建等用户确认维护窗口/数据可丢/其他用户后，另发 E3-S；本轮不执行。
+
+---
+
+# E3-S（待用户授权）· node2 Raid0 strip 64→256KB 重建 + c/d 测试
+
+> 用户决定：stripe 用 **256KB**；4MB/8MB 客户端 chunk 用默认 **128KB**；不做 128KB 对照。
+> 前置：E3-R 已确认可行、数据可丢、当前无 initiator；**执行前必须由用户确认窗口/授权**。
+> 重建会清空阵列；R17；**不改交付表**。
+
+## 执行前（只读复核）
+
+1) 确认 node2 无 initiator、4421 无连接、无进程占用 5 块盘/SPDK 实例；
+2) 确认无其他用户正在使用；记录 `date +%T`；
+3) 备份脚本：`cp ~/nds/scripts/node2_target_up.sh ~/nds/scripts/node2_target_up.sh.bak_strip64`。
+
+## 重建（做法 A：改脚本 + 整体重启）
+
+1) 把 `bdev_raid_create -n Raid0 -z 64 -r raid0` 改成 `-z 256`；
+2) `grep -n bdev_raid_create` 确认已是 256；
+3) `bash ~/nds/scripts/node2_target_up.sh 4194304`；
+4) 复核：`bdev_raid_get_bdevs all` → `strip_size_kb=256`、`online`、5/5 base；
+   `nvmf_subsystem_get_subsystems` → nsid=1→Raid0；listener 4421 LISTEN。
+   **必须看 RPC 返回的 `strip_size_kb`，不能只看脚本退出码。**
+
+## prefill + 测试
+
+1) prefill 100 keys（R09 同款：`--scenario=segment_write --role=writer
+   --nof_segments="" --replica_num=0 --nof_replica_num=1 --num_keys=100
+   --batch_size=32 --key_include_value_size=true`，换新 key 空间，避免旧 key 指向空位置）；
+2) 10s 冒烟 c 1/1：`failed=0`、`scatter_copy` 有样本；
+3) c/d 的 1/1、16/16，2 轮 × 60s；客户端 chunk 默认 128KB：
+   - 不设 `MC_NOF_SUBMIT_CHUNK_BYTES`；**不要用 `/tmp/e3o_ab.sh`**；
+   - 每点 dump `/proc/<pid>/environ`，确认该变量未设或=131072；
+4) 结果写 R17，与现有 64KB 基线（R08/R16）比方向；不做 128KB 对照；不改交付表；
+5) 记录重建前后时间戳、strip、failed、NoF/copy 段。
+
+## 回滚
+
+`cp node2_target_up.sh.bak_strip64 node2_target_up.sh && bash node2_target_up.sh 4194304`；
+回滚同样清空阵列，需重新 prefill。
