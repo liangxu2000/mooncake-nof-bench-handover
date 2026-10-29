@@ -832,6 +832,7 @@
 3. 重建测试已完成 R17；结果变差，已回滚；当前 **64KB stripe + 128KB chunk**。
 4. 256KB vs 512KB 的 test2 数据线程不一致（E=32 vs 6），不作为条带结论；需同线程补测。
 5. **128KB chunk 与 256KB 条带的交互**：128KB 是 256KB 条带的半条带，连续 128KB child 会落在同一块盘，5 盘并行度下降；这可能是 256KB 变差的原因之一。64KB 条带 + 128KB chunk 是对齐的（2× 条带）。
+6. 详细结论见 `reports/stripe_chunk_conclusion_20261029.md`（chunk/stripe 两个旋钮、R16/R17、暂定；后续重评估条件）。
 
 ---
 
