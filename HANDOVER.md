@@ -826,16 +826,16 @@
 
 # 决策记录（2026-10-29）
 
-1. **NoF 客户端 chunk 保持 128KB**（`MC_NOF_SUBMIT_CHUNK_BYTES=131072`）；R16 已证明 128K vs 512K 无收益。
+1. **4MB / 8MB 场景的 NoF 客户端 chunk 统一用默认 128KB**（`MC_NOF_SUBMIT_CHUNK_BYTES=131072`，不设即默认；如脚本必须写，写 `131072`，不能写 `128K`）；R16 已证明 128K vs 512K 无收益。E3-O 的 512K 只作历史诊断，**后续跑点前确认 env 未设或=131072**。
 2. **后续 stripe size 对照统一用 256KB**（用户决定）；当前 node2 阵列 strip 仍是 **64KB**，改成 256KB 需重建 RAID0（备份/停机/授权），**未执行**。
-3. 重建后测 c/d 1/1 + 16/16；以现有 64KB 数据为基线，**不额外跑 128KB 对照**。
+3. 重建后测 c/d 1/1 + 16/16；以现有 64KB 数据为基线，**不额外跑 128KB 对照**；客户端 chunk 用默认 128KB。
 4. 256KB vs 512KB 的 test2 数据线程不一致（E=32 vs 6），不作为条带结论；需同线程补测。
 
 ---
 
 # E3-R（待执行）· node2 Raid0 strip 64→256KB 重建可行性核查（只读）
 
-> 用户决定：后续 stripe size 用 **256KB**；客户端 chunk 保持 **128KB**；不做 128KB 对照。
+> 用户决定：后续 stripe size 用 **256KB**；客户端 chunk **4MB/8MB 都用默认 128KB**；不做 128KB 对照。
 > 当前 node2：5× 华为 ES3000 V6，vfio-pci 交给 SPDK，SPDK Raid0 bdev，`strip_size_kb=64`，38.4TB。
 > 改成 256KB 必须重建 Raid0 bdev，**会清空阵列**；本轮只做只读核查，不重建、不停服务、不改配置。
 
@@ -849,7 +849,9 @@
    是否需要备份。
 5) 确认重建后要做的事：重启 target、重建 namespace/注册、initiator 是否要重新发现；给出步骤。
 6) 给出回滚到 64KB 的步骤。
-7) 不改配置、不删 bdev、不停服务、不重建；只回文本。
+7) 确认测试脚本不会带入 E3-O 的 512K env；跑点前 dump `/proc/<pid>/environ`，确认
+   `MC_NOF_SUBMIT_CHUNK_BYTES` 未设或=131072（4MB/8MB 都一样）。
+8) 不改配置、不删 bdev、不停服务、不重建；只回文本。
 
 ## 回执
 
