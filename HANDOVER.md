@@ -77,6 +77,7 @@
 | E3-O | 2026-10-29 | RAID0 条带核对 + 512KB NoF chunk A/B | 已关闭 | 条带 64 KiB（SPDK Raid0，5× ES3000 V6）；128KB=2× 条带、512KB=8×；A/B 无收益（Δ≤0.63%），保持 128KB；R16 |
 | E3-P | 2026-10-29 | 补 R16 分段列定义 + c/d 关键行 | 已关闭 | 228/337 同埋点；337 是 E3-I 重尾批次，R16 225；copy/query 稳定；R16 CSV 无 residual/total；batch>1 仅 transfer_data 无埋点，scatter_copy 仍有 |
 | E3-Q | 2026-10-29 | 读取同事 stripe size 对照数据（xlsx） | 已关闭 | 两份文件不同层；256KB vs 512KB 线程不一致（E=32 vs 6），不受控；5SSD b1T1 128KB 拐点、64KB 差；客户端 chunk 保持 128KB；阵列 strip 改动需重建，未做 |
+| E3-R | 2026-10-29 | node2 Raid0 strip 64→256KB 重建可行性核查（只读） | 待执行 | — |
 
 ---
 
@@ -827,5 +828,35 @@
 
 1. **NoF 客户端 chunk 保持 128KB**（`MC_NOF_SUBMIT_CHUNK_BYTES=131072`）；R16 已证明 128K vs 512K 无收益。
 2. **后续 stripe size 对照统一用 256KB**（用户决定）；当前 node2 阵列 strip 仍是 **64KB**，改成 256KB 需重建 RAID0（备份/停机/授权），**未执行**。
-3. 重建对照建议：256KB vs 64KB 基线，c/d 1/1 + 16/16；条件允许时保留 **128KB** 对照（raw scan 里 5SSD 1/1 128KB 略优于 256KB）。
+3. 重建后测 c/d 1/1 + 16/16；以现有 64KB 数据为基线，**不额外跑 128KB 对照**。
 4. 256KB vs 512KB 的 test2 数据线程不一致（E=32 vs 6），不作为条带结论；需同线程补测。
+
+---
+
+# E3-R（待执行）· node2 Raid0 strip 64→256KB 重建可行性核查（只读）
+
+> 用户决定：后续 stripe size 用 **256KB**；客户端 chunk 保持 **128KB**；不做 128KB 对照。
+> 当前 node2：5× 华为 ES3000 V6，vfio-pci 交给 SPDK，SPDK Raid0 bdev，`strip_size_kb=64`，38.4TB。
+> 改成 256KB 必须重建 Raid0 bdev，**会清空阵列**；本轮只做只读核查，不重建、不停服务、不改配置。
+
+## 指令（只读）
+
+1) 找 NoF target 的启动方式：进程、配置文件、RPC 脚本、raid bdev 名、5 个 base bdev、namespace/NQN。
+2) 确认当前 `bdev_get_bdevs -b Raid0`：strip_size_kb=64、num_base_bdevs=5、state=online。
+3) 查 `rpc.py bdev_raid_create --help`，确认 strip size 参数（`-z` 单位 KB）与重建命令；
+   给出“改配置重启”和“RPC 删除/重建”两种做法的具体命令。
+4) 确认数据：阵列上有什么数据、是否可由 bench 重新写入（100 keys）、是否有其他用户/服务；
+   是否需要备份。
+5) 确认重建后要做的事：重启 target、重建 namespace/注册、initiator 是否要重新发现；给出步骤。
+6) 给出回滚到 64KB 的步骤。
+7) 不改配置、不删 bdev、不停服务、不重建；只回文本。
+
+## 回执
+
+- target 进程/配置/RPC/raid bdev/namespace 清单；
+- 重建 256KB 的两种命令 + 风险；
+- 数据/其他用户/备份结论；
+- 回滚步骤；
+- 预计停机时间。
+
+> 实际重建等用户确认维护窗口/数据可丢/其他用户后，另发 E3-S；本轮不执行。
