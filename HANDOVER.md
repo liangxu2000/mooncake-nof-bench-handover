@@ -74,6 +74,7 @@
 | E3-L | 2026-10-28 | 4 MiB UB CQ moderation 核对 | 已关闭（源码） | CQ moderation 假设推翻；Mooncake 无设备 moderation；perftest -Q 是 post-list 攒批；b 21.9 单请求 |
 | E3-L2 | 2026-10-28 | b 1/1 在飞 1→2→4 + b 16/16 UB 段 | 已关闭 | UB 恒 180–181（预期 178→120→90 被否）；copy 414→6589，聚合 ~9.5；b 下限 594、pin 569；500+ 不可达；16/16 8.67 可复现 |
 | E3-M | 2026-10-28 | 读取用户提供的对照 xlsx（只读、只回文本） | 已关闭 | 1 个 xlsx / 42 有效行；CPU-only 4MB Host→Host/NoF；独立验证 b/d 的 UB/NoF 段与 GPU 瓶颈；原始数据不落公开仓 |
+| E3-O | 2026-10-29 | RAID0 条带核对 + 512KB NoF chunk A/B | 待执行 | — |
 
 ---
 
@@ -693,3 +694,48 @@
 - 标注哪些 sheet 对应 a/b/c/d、4MB/8MB；哪些是原始/汇总。
 
 > 解析用 openpyxl，不要用正则/字符串切割 xlsx（之前出过自闭合单元格错位）。
+
+---
+
+# E3-O（待执行）· RAID0 条带核对 + 512KB NoF chunk A/B
+
+> 背景：同事确认其 512KB 是 RAID0 条带，initiator 按条带切 child：4MB→8 child。
+> 我们默认 `MC_NOF_SUBMIT_CHUNK_BYTES=131072`（128KB）→ 32 child。
+> 目标：确认我们 5× SSD 的 RAID0 条带，并做 128KB vs 512KB 的受控 A/B。
+> **只改 env，不改代码；不改交付表。**
+
+## 第一步：只读核对（node2）
+
+1) 找到承载 NoF 的 RAID0 设备（`lsblk`、`df`、`mount`）；
+2) 读条带：
+   - `mdadm --detail /dev/mdX`
+   - `cat /sys/block/mdX/md/chunk_size`
+   - 若是硬件 RAID，记录控制器型号/条带（只读命令）。
+3) 回报设备名、条带字节数、5 块盘型号；不要改阵列。
+
+## 第二步：A/B（node4，客户端 env）
+
+- 基准：`MC_NOF_SUBMIT_CHUNK_BYTES=131072`（默认 128KB，32 child）
+- 对照：`MC_NOF_SUBMIT_CHUNK_BYTES=524288`（512KB，8 child）
+- **只认十进制字节；写 `512K` 会被 `strtol` 解析成 512，校验失败后回退 128KB。**
+- 其余协议不变：4MB、`--local_buffer_size=2G`、`--global_segment_size=0`、`numactl --cpunodebind=0`。
+- 跑 c、d 的 1/1 与 16/16；每点 60 s；同窗口、同 NoF target。
+- 1/1 用 batch=1，拿打点分段；16/16 用 batch=16，拿吞吐/avg（batch>1 无逐请求埋点）。
+- 每点记录：failed、avg、吞吐、NoF/transfer 段（若有打点）、copy 段（d）。
+- 若 512KB 出现 NoF 错误/失败率升高，立即停，回报。
+
+## 判据
+
+- 先看条带：若是 512KB，128KB 就是 4× 细切；若是 128KB，128KB 已对齐。
+- 512KB vs 128KB：
+  - d 1/1 NoF 段 337 → 是否接近 288–310；total 773 → 是否 ~730；
+  - c 1/1 NoF 段 379 → 是否接近 340；total 470 → 是否 ~430；
+  - 16/16：copy/PCIe 仍是主成本，吞吐不应有大变化；若变化 >5%，记录。
+- 不改交付表；只写 R15 meta/CSV/台账。
+
+## 产物
+
+- R15_20261029_NoF_chunkAB：meta.md、summary.csv、progress logs；
+- 台账；条带核对原始行（≤10 行）。
+
+> 备注：同事的 288.78 是 5SSD/512KB/6 线程；我们 A/B 是 1 线程，只隔离 chunk，不隔离线程。
