@@ -80,6 +80,7 @@
 | E3-R | 2026-10-29 | node2 Raid0 strip 64→256KB 重建可行性核查（只读） | 已关闭 | 可行；`-z 256` 合法；重建清空阵列；仅 1.2GB 自写数据、无他人数据；停机 5–10s；env 干净；做法 A（改脚本+重启）推荐；执行前再查占用 |
 | E3-S | 2026-10-29 | node2 Raid0 strip 64→256KB 重建 + c/d 测试 | 已关闭（回滚 64KB） | 256KB 变差：c 1/1 −6.5%、d −2.5%、16/16 持平；p50 改善但 p99 变差；已回滚 64KB；R17；交付表未动 |
 | E3-T | 2026-10-29 | 汇总 R16/R17 c/d 时延对照表 | 已关闭 | c 1/1 avg +6.7%/P99 +15%；d P50 −4.7%/P99 +7.9%；16/16 持平；latency_64K_vs_256K.md/csv；P90/P99.9/P99.99/Pmax 未在 summary.csv |
+| E3-U | 2026-10-29 | 4 MiB 单请求 vs 多请求：UB/PCIe 线速验证 | 待执行 | — |
 
 ---
 
@@ -957,3 +958,41 @@
 - 1/1 分段表；
 - 文件名/路径；
 - 哪些分位缺失。
+
+---
+
+# E3-U（待执行）· 4 MiB 单请求 vs 多请求：UB/PCIe 线速验证
+
+> 目的：验证 **83 µs（UB 46.4 GiB/s）** 和 **266 µs（PCIe 14.67 GiB/s）** 是单请求可达的时延，
+> 还是只有多请求/饱和时才达到；解决 1/1 模型争议。
+> **只读/标准工具；不改代码、不改交付表；结果 R18。**
+
+## A. UB 纯传输（urma_perftest）
+
+- 4 MiB read/write，1 QP/线程，Q1、Q2、Q4、Q8（或 J=1/2/4），30 s；
+- 每个配置报 **latency avg/P50/P99** 和 throughput（GiB/s）；
+- 节点 node4↔node2，同一个 `udmac0d1e2`；记录完整命令；
+- **不要用旧脚本里的 `pkill` / 明文 root 密码**；直接跑 `urma_perftest`；若必须用脚本，先读脚本、只执行 perftest 部分；
+- 判据：**Q1 latency ≈83 µs** → 单请求可达；**Q1 latency ≈180 µs 且吞吐 46.4** → 46.4 是多请求/流水线值。
+
+## B. PCIe 纯 copy（4 MiB）
+
+- 复用 E3-A 的 copy 标定程序（pinned / pageable）；1/2/4/8 个并发 copy，300 次；
+- 报 per-copy latency avg/P50/P99 和 aggregate GiB/s；
+- 判据：单 copy pinned≈335、pageable≈414；若 4/8 并发 aggregate 接近 12.5–14.67 GiB/s → 266 是饱和值；若单 copy 能到 266 → 单请求满线速。
+- 如果现有程序不支持并发，报告，不要新写大程序。
+
+## C. Mooncake 对照
+
+- 现有 b 1/1 UB 180、d 1/1 NoF 225、copy 414/415；与 A/B 对照，判断 180/414 是链路还是软件栈；
+- 复用 R16/R17 数据，不重跑。
+
+## 执行前
+
+- 确认 node2/node4 没有 bench、没有其他 UB/PCIe 大流量；共享机器，遇到占用停手回报；
+- 记录时间戳、设备、QP/线程、message size、轮次。
+
+## 产物
+
+- R18_20261029_line_rate_check：summary.csv、latency.csv、命令、日志；台账；
+- 不改交付表；结果只用于解释模型。
