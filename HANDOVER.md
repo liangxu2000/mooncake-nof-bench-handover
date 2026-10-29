@@ -74,7 +74,7 @@
 | E3-L | 2026-10-28 | 4 MiB UB CQ moderation 核对 | 已关闭（源码） | CQ moderation 假设推翻；Mooncake 无设备 moderation；perftest -Q 是 post-list 攒批；b 21.9 单请求 |
 | E3-L2 | 2026-10-28 | b 1/1 在飞 1→2→4 + b 16/16 UB 段 | 已关闭 | UB 恒 180–181（预期 178→120→90 被否）；copy 414→6589，聚合 ~9.5；b 下限 594、pin 569；500+ 不可达；16/16 8.67 可复现 |
 | E3-M | 2026-10-28 | 读取用户提供的对照 xlsx（只读、只回文本） | 已关闭 | 1 个 xlsx / 42 有效行；CPU-only 4MB Host→Host/NoF；独立验证 b/d 的 UB/NoF 段与 GPU 瓶颈；原始数据不落公开仓 |
-| E3-O | 2026-10-29 | RAID0 条带核对 + 512KB NoF chunk A/B | 待执行 | — |
+| E3-O | 2026-10-29 | RAID0 条带核对 + 512KB NoF chunk A/B | 已关闭 | 条带 64 KiB（SPDK Raid0，5× ES3000 V6）；128KB=2× 条带、512KB=8×；A/B 无收益（Δ≤0.63%），保持 128KB；R16 |
 
 ---
 
@@ -697,7 +697,13 @@
 
 ---
 
-# E3-O（待执行）· RAID0 条带核对 + 512KB NoF chunk A/B
+# E3-O（已关闭）· RAID0 条带核对 + 512KB NoF chunk A/B
+
+> 回执摘要（2026-10-29）：
+> - 条带：SPDK Raid0 bdev `strip_size_kb=64`；5× 华为 ES3000 V6，vfio-pci；无 Linux md/硬件 RAID。
+> - 128 KiB=2× 条带、512 KiB=8× 条带，均天然对齐；131072 vs 524288 的 c/d A/B 无收益（Δ≤0.63%），保持默认 128KB。
+> - 16 点 failed=0；代码未动；R16（R15 已被 E3-M 占用）。
+> - 过程：首轮 abort 误命中预期的 `cuMemGetHandleForAddressRange failed rc=801`，修正后重跑；`mc_bench_point.sh` 增加 1 行 env 透传（md5 58044b62→ef6914cd）。
 
 > 背景：同事确认其 512KB 是 RAID0 条带，initiator 按条带切 child：4MB→8 child。
 > 我们默认 `MC_NOF_SUBMIT_CHUNK_BYTES=131072`（128KB）→ 32 child。
