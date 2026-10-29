@@ -75,6 +75,7 @@
 | E3-L2 | 2026-10-28 | b 1/1 在飞 1→2→4 + b 16/16 UB 段 | 已关闭 | UB 恒 180–181（预期 178→120→90 被否）；copy 414→6589，聚合 ~9.5；b 下限 594、pin 569；500+ 不可达；16/16 8.67 可复现 |
 | E3-M | 2026-10-28 | 读取用户提供的对照 xlsx（只读、只回文本） | 已关闭 | 1 个 xlsx / 42 有效行；CPU-only 4MB Host→Host/NoF；独立验证 b/d 的 UB/NoF 段与 GPU 瓶颈；原始数据不落公开仓 |
 | E3-O | 2026-10-29 | RAID0 条带核对 + 512KB NoF chunk A/B | 已关闭 | 条带 64 KiB（SPDK Raid0，5× ES3000 V6）；128KB=2× 条带、512KB=8×；A/B 无收益（Δ≤0.63%），保持 128KB；R16 |
+| E3-P | 2026-10-29 | 补 R16 分段列定义 + c/d 关键行 | 待执行 | — |
 
 ---
 
@@ -741,7 +742,36 @@
 
 ## 产物
 
-- R15_20261029_NoF_chunkAB：meta.md、summary.csv、progress logs；
+- R16_20261029_NoF_chunkAB：meta.md、summary.csv、progress logs（R15 已被 E3-M 占用）；
 - 台账；条带核对原始行（≤10 行）。
 
 > 备注：同事的 288.78 是 5SSD/512KB/6 线程；我们 A/B 是 1 线程，只隔离 chunk，不隔离线程。
+
+---
+
+# E3-P（待执行）· 补 R16 分段列定义 + c/d 关键行
+
+> 目的：对齐 E3-O 的 228 µs（SPDK NoF 段）与 E3-I 的 337 µs（更宽 transfer 段），
+> 判断同事 288.78 µs 与我们的差是口径还是真实差距。
+> **只读 R16 产物；不重跑、不改代码、不传文件；回执只发文本。**
+
+## 指令
+
+1) 读 `测试相关资料/results/第二次测试结果&分析/R16_20261029_NoF_chunkAB/`：
+   - `breakdown_median.csv`：给表头 + c/d 的 1/1 两档行（128KB/512KB）；
+   - `summary.csv`：给表头 + c/d 的 1/1、16/16 行；
+   - `meta.md` 中与分段/计时口径有关的段落（≤30 行）。
+2) 说明 `breakdown_median.csv` 每列含义，特别是：
+   - `transfer` 的起止点：只含 SPDK NoF I/O，还是含 URMA/暂存？
+   - `copy` 的起止点；`residual` 是什么；`total` 是否等于 query+transfer+copy+residual；
+   - 是否有 `transport`/`staging` 列，若有，给值。
+3) 对比 E3-I 的 `transfer` 337（d）与 E3-O 的 `transfer` 228：是同一埋点吗？
+   如果 E3-O 改了埋点/列名，说明改了哪里（≤10 行）。
+4) 只发文本；不贴整份 CSV；不传文件；不重跑。
+
+## 回执
+
+- `breakdown_median.csv` 表头 + c/d 1/1 行；
+- `summary.csv` 表头 + c/d 1/1、16/16 行；
+- 列定义 + E3-I/E3-O 差异说明；
+- 若某列在 R16 中不存在，明确说“没有”，不要猜。
