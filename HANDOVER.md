@@ -76,7 +76,7 @@
 | E3-M | 2026-10-28 | 读取用户提供的对照 xlsx（只读、只回文本） | 已关闭 | 1 个 xlsx / 42 有效行；CPU-only 4MB Host→Host/NoF；独立验证 b/d 的 UB/NoF 段与 GPU 瓶颈；原始数据不落公开仓 |
 | E3-O | 2026-10-29 | RAID0 条带核对 + 512KB NoF chunk A/B | 已关闭 | 条带 64 KiB（SPDK Raid0，5× ES3000 V6）；128KB=2× 条带、512KB=8×；A/B 无收益（Δ≤0.63%），保持 128KB；R16 |
 | E3-P | 2026-10-29 | 补 R16 分段列定义 + c/d 关键行 | 已关闭 | 228/337 同埋点；337 是 E3-I 重尾批次，R16 225；copy/query 稳定；R16 CSV 无 residual/total；batch>1 仅 transfer_data 无埋点，scatter_copy 仍有 |
-| E3-Q | 2026-10-29 | 读取同事 stripe size 对照数据（xlsx） | 待执行 | — |
+| E3-Q | 2026-10-29 | 读取同事 stripe size 对照数据（xlsx） | 已关闭 | 两份文件不同层；256KB vs 512KB 线程不一致（E=32 vs 6），不受控；5SSD b1T1 128KB 拐点、64KB 差；客户端 chunk 保持 128KB；阵列 strip 改动需重建，未做 |
 
 ---
 
@@ -787,7 +787,15 @@
 
 ---
 
-# E3-Q（待执行）· 读取同事 stripe size 对照数据（xlsx）
+# E3-Q（已关闭）· 读取同事 stripe size 对照数据（xlsx）
+
+> 回执摘要（2026-10-29）：
+> - 两份文件不同层：`stripesize影响.xlsx` 是 SPDK 裸条带扫描（node1 6×7T + node3，重建 RAID0）；
+>   `test2.xlsx` 是 Mooncake 256KB stripe 补测。
+> - 256KB vs 512KB 线程不一致（E=32 vs 6），**不是受控对照**；16/16 无增益；不能引用“256KB 更好”。
+> - SPDK 扫描：5SSD b1T1 128KB 为拐点、64KB 差；b32T4 贴 UB 峰值（strip 无影响）；1SSD 无影响。
+> - 结论：客户端 chunk 保持 128KB；node2 阵列 strip 64KB，改动需重建 RAID0，未做；不追 256KB。
+> - 原始数据不落公开仓。
 
 > 用户提供：`测试相关资料/同事B测试数据/` 下的 `stripesize影响*` 和 `test2.xlsx`
 > （test2 是 256KB stripe 的补测）。目的：看 stripe size 对 Host→NoF 的影响，
