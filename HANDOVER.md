@@ -73,7 +73,7 @@
 | E3-K | 2026-10-28 | UB 带宽 / urma_check.sh 单位核对 | 已关闭 | 46.4–46.9 GiB/s；脚本 MiB/s 无换算；E3-L 更正：-Q 是 perftest 攒批；b 21.9 单请求；node2 不再独占 |
 | E3-L | 2026-10-28 | 4 MiB UB CQ moderation 核对 | 已关闭（源码） | CQ moderation 假设推翻；Mooncake 无设备 moderation；perftest -Q 是 post-list 攒批；b 21.9 单请求 |
 | E3-L2 | 2026-10-28 | b 1/1 在飞 1→2→4 + b 16/16 UB 段 | 已关闭 | UB 恒 180–181（预期 178→120→90 被否）；copy 414→6589，聚合 ~9.5；b 下限 594、pin 569；500+ 不可达；16/16 8.67 可复现 |
-| E3-M | 2026-10-28 | 读取用户提供的对照 xlsx（只读、只回文本） | 待执行 | — |
+| E3-M | 2026-10-28 | 读取用户提供的对照 xlsx（只读、只回文本） | 已关闭 | 1 个 xlsx / 42 有效行；CPU-only 4MB Host→Host/NoF；独立验证 b/d 的 UB/NoF 段与 GPU 瓶颈；原始数据不落公开仓 |
 
 ---
 
@@ -656,7 +656,14 @@
 
 ---
 
-# E3-M（待执行）· 读取用户提供的对照 xlsx（只读、只回文本）
+# E3-M（已关闭）· 读取用户提供的对照 xlsx（只读、只回文本）
+
+> 回执摘要（2026-10-29）：
+> - 1 个 xlsx（22,638 bytes，单 sheet，58×23，42 个有效行）；CPU-only 4MB Host→Host / Host→NoF。
+> - Host→Host 1/1 186.7 µs、16/16 46.95 GiB/s；Host→NoF 5SSD 16/16 44.28 GiB/s。
+> - 独立验证：我们 b 的 UB 段 180 µs 与同事 Host→Host 同量级；b/d 与同事的差 ≈ copy + 控制；
+>   GPU 目的地的 12.69 是 PCIe HBM write，不是 UB/NoF/SSD。
+> - 原始数据用于本地对照，**不落公开仓**。
 
 > 用户提供了一批对照测试数据，放在
 > `测试相关资料/同事B测试数据/`（以实际目录名为准）下的 `.xlsx`。
