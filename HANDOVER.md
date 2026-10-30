@@ -1119,6 +1119,10 @@
    字段含 `setup_us / submit_us / wait_blocked_us / result_us / total_us`。
 3) 两个 env 都是上游已有，只影响日志；若 build 里没有，停手回报，不要自己加代码。
 4) 不改 node2/阵列/交付表；只在 node4 客户端加 env。
+5) **顺带只读确认（不改配置）**：8MB b 16/16 走的是哪个 buffer 池。用 10 s smoke 日志
+   grep `registered CPU staging pool`、`local_buffer_size`、`client_buffer_allocator`，
+   确认 UB staging 池是否分配；若 8MB 也走客户端 buffer 池，E3-G 的 env 修复根因需重查。
+   只回文本，不跑 8MB 全表。
 
 ## 测试（4MB b，pin B 臂）
 
