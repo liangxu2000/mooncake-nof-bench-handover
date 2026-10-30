@@ -81,6 +81,7 @@
 | E3-S | 2026-10-29 | node2 Raid0 strip 64→256KB 重建 + c/d 测试 | 已关闭（回滚 64KB） | 256KB 变差：c 1/1 −6.5%、d −2.5%、16/16 持平；p50 改善但 p99 变差；已回滚 64KB；R17；交付表未动 |
 | E3-T | 2026-10-29 | 汇总 R16/R17 c/d 时延对照表 | 已关闭 | c 1/1 avg +6.7%/P99 +15%；d P50 −4.7%/P99 +7.9%；16/16 持平；latency_64K_vs_256K.md/csv；P90/P99.9/P99.99/Pmax 未在 summary.csv |
 | E3-U | 2026-10-29 | 4 MiB 单请求 vs 多请求：UB/PCIe 线速验证 | 已关闭 | UB 单请求 86.4 µs（45.1 GiB/s）；PCIe 266 不可达，pinned 334.8/pageable 383；Mooncake UB 180=栈 +94；copy 414=pageable+31；R18 |
+| E3-N | 2026-10-30 | pinned UB staging A/B（b 主目标；d 对照） | 待执行 | — |
 
 ---
 
@@ -1003,3 +1004,56 @@
 
 - R18_20261029_line_rate_check：summary.csv、latency.csv、命令、日志；台账；
 - 不改交付表；结果只用于解释模型。
+
+---
+
+# E3-N（待执行 · 已授权）· pinned UB staging A/B（b 主目标；d 对照）
+
+> 用户已授权。目标：验证 pageable staging 的 copy 墙；**只改 node4 本地代码（env 门控），
+> 不改 node2/阵列/交付表；R19。**
+> 背景：b 1/1 648 = UB 180 + copy 414 + 控制 54；copy 414 = pageable 383 + 31；
+> E3-U 的 pinned 单 copy 334.8。预期 pin 后 copy 335–366，b 648→569–600。
+> **b 是主目标；d 的 copy 是否来自 UB staging 先确认**：若 d 用 NoF staging，d 不变是正常，
+> 不要当作 pin 失败。
+
+## 前置（代码事实）
+
+1) 确认 b（UB transport）和 d（NoF）的 staging 池是不是同一个：
+   - b：`UbTransport::acquireStaging`（`ub_transport.cpp`）分配 UB staging；
+   - d：NoF 路径的 staging 可能在 `transfer_task`/SPDK；若不同池，先只 pin UB，记录 d 不变。
+2) 在现有本地构建（HEAD d371e227 + E3-I 埋点）上打补丁；不要提交上游。
+
+## 代码（本地、env 门控）
+
+1) `UbTransport::acquireStaging` 分配池后，若 `MC_UB_STAGING_POOL_PIN=1`：
+   `cudaHostRegister(base, size, cudaHostRegisterPortable)`；
+   - 记录返回值、耗时、`/proc/<pid>/status` 的 `VmLck`；
+   - 失败则 log，继续 pageable，不改变行为。
+2) 析构：先 `unregisterLocalMemory`，再 `cudaHostUnregister`，最后 `ub_free_memory`。
+3) 若 build 未链接 cudart，用本地 `dlopen` 包装或本地 CMake 加 cudart；不改上游。
+4) `MC_UB_STAGING_POOL_PIN=0` 即回退；保留 diff（≤15 行）和 build 命令。
+
+## 测试
+
+- 4MB：`--local_buffer_size=2G`、`--global_segment_size=0`、
+  `numactl --cpunodebind=0`、chunk 默认；
+- `MC_UB_STAGING_POOL_SIZE=2147483648`（2G，两臂相同）；
+  A 臂 `MC_UB_STAGING_POOL_PIN=0`；B 臂 `=1`；
+- b/d 的 1/1（3 轮）+ 16/16（2 轮），每点 60 s，同窗口；
+- 1/1 用 batch=1 拿 copy 段/total；16/16 用 batch=16 拿吞吐；
+- 先 smoke b 1/1 10 s：`failed=0`、pin 成功、`VmLck` 增加；再矩阵；
+- pin 失败 / `cudaHostRegister` 超时 / 内存不足：停手报告；不要用 1G 池硬跑 16/16。
+
+## 判据
+
+- copy 段 414→?（目标 335–366）；
+- b 1/1 648→?（目标 569–600）；
+- d 1/1 697→?（若共用池；否则不变，记录）；
+- b/d 16/16 8.67 / 9.40→?（若 copy 墙是 pageable，应升；若不变，墙在 copy 引擎/并发）。
+- 不改交付表；R19。
+
+## 产物
+
+- R19_20261030_pin_staging：meta.md、summary.csv、breakdown_median.csv、
+  env_*.txt、raw_*.log、pin_*.log；
+- 台账；diff（≤15 行）+ build 命令。
