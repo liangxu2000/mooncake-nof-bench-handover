@@ -1,6 +1,6 @@
 # 交接文件（单向：开发指挥 Agent → 测试执行 Agent）
 
-- 最后更新：2026-10-27 15:45
+- 最后更新：2026-10-30
 - 仓库：`https://github.com/liangxu2000/mooncake-nof-bench-handover`（public，可匿名拉取，无需凭据）
 - 首次：`git clone https://github.com/liangxu2000/mooncake-nof-bench-handover.git`
 - 之后每轮：`cd mooncake-nof-bench-handover && git pull`
@@ -15,6 +15,7 @@
 4. 任务正文统一用《接管说明》§1.2 模板。
 5. **资料与回执格式**：只给结论、≤20 行原始输出片段、`文件:行号`、diff；脚本/env 摘录 ≤15 行，CSV 只给相关行（≤5 行）。
 6. 若出现代码补丁，放在 `patches/`，一律 `git diff`（必要时 `-U1` 压缩上下文）+ `base64 -w0` 单行 + patch/b64 两份 md5；落地前先 `git apply --check`。
+7. **代码保管（长期）**：所有代码改动（含 env 门控、埋点、本地修正）都必须把最小 diff 回传给开发指挥 Agent；由外部本地归档、核对并在最终阶段统一提交 git。测试 Agent 继续只 pull、不 push；回执只给 diff，不传整文件、构建产物或日志。
 
 ## 结果与交付约定（从 E3-B 起生效）
 
