@@ -83,7 +83,9 @@
 | E3-T | 2026-10-29 | 汇总 R16/R17 c/d 时延对照表 | 已关闭 | c 1/1 avg +6.7%/P99 +15%；d P50 −4.7%/P99 +7.9%；16/16 持平；latency_64K_vs_256K.md/csv；P90/P99.9/P99.99/Pmax 未在 summary.csv |
 | E3-U | 2026-10-29 | 4 MiB 单请求 vs 多请求：UB/PCIe 线速验证 | 已关闭 | UB 单请求 86.4 µs（45.1 GiB/s）；PCIe 266 不可达，pinned 334.8/pageable 383；Mooncake UB 180=栈 +94；copy 414=pageable+31；R18 |
 | E3-N | 2026-10-30 | pinned 客户端 buffer 池 A/B（b 主目标；d 对照） | 已关闭 | copy 411/415→336 µs；b 568 / d 681；16/16 9.99 / 11.38；报告 §3.9 |
-| E3-V | 2026-10-30 | UB 180 µs 拆解：client submit/wait + worker queue/post/CQ | 待执行 | — |
+| E3-N-R | 2026-10-30 | E3-N 最小 diff 回传与本地归档 | 已关闭 | 3 文件/34 行；sha256 a19d…；d371e227 apply 成功；client 池析构 unregister 未接 |
+| E3-V | 2026-10-30 | UB 180 µs 拆解：client submit/wait + worker queue/post/CQ | 已关闭 | submit 27.0 / wait 153.0；post→CQ 56.4/片；残差 66.2 是 32 片流水尾巴；batch=16 两池都在用 |
+| E3-W | 2026-10-30 | UB 切片大小 A/B：128K/256K/512K/1M/4M（4MB b 1/1） | 待执行 | — |
 
 ---
 
@@ -1103,7 +1105,11 @@
 
 ---
 
-# E3-V（待执行）· UB 180 µs 拆解（4MB b 1/1；只测量、不改代码）
+# E3-V（已关闭 · 2026-10-30）· UB 180 µs 拆解（4MB b 1/1；只测量、不改代码）
+
+> 已收，回执见下方。**执行偏差**：batch=1 不走 `batch_get_data_breakdown`（0 行），
+> 改用 `transfer_data_breakdown` 的 `submit_us / wait_us / total_us`；
+> `batch_get_data_breakdown` 只在 batch>1 生效。
 
 > 目标：E3-N 后 b 568 = UB 180 + copy 336 + 控制 52；copy 已经到底，
 > 剩余 93 µs 全在 UB。先把 180 拆成 **client submit / worker 排队 / post / 完成/轮询**，
@@ -1166,9 +1172,51 @@
   （过滤后的 `batch_get_data_breakdown`）、命令、env、load；
 - 台账；不改交付表。
 
+## 回执（2026-10-30，已收）
+
+**结果（4MB b 1/1，pin=1，diag=1，3×60 s，failed=0）**
+
+- diag 开销：6.77 → 6.80 GiB/s（−0.40% / +0.38%），合格；3 轮 6.85 / 6.84 / 6.83 GiB/s，
+  avg 569.75 / 571.14 / 571.88 µs。
+- client：`submit 27.0` / `wait 153.0` / `total 180.7` µs；
+  get_into：query 38.3 / read 525.3 / total 565.3（read ≈ UB 180.7 + copy 336）。
+- worker（去掉首末区间、按 `completed_slices` 加权，2 worker、118 区间/轮）：
+  `queue_wait 19.9`（max 101）、`post_call 11.2/call`、`post_to_cq 56.4`（max 158）、
+  `poll_call 0.10 µs/call`（≈43 万次/s，≈4% 单核，不是瓶颈）、`dequeue 0.17/slice`、
+  `active_loop_gap_max 36`、`31.9 片/请求`。
+
+| 层 | µs | 占 180.7 |
+| --- | --- | --- |
+| client submit | 27.0 | 14.9% |
+| worker queue_wait | 19.9 | 11.0% |
+| worker post_call | 11.2 | 6.2% |
+| post→CQ | 56.4 | 31.2% |
+| 未归因残差 | 66.2 | 36.7% |
+
+- **第一可归因大头是 post→CQ 56.4/片（URMA 完成/链路）**，不是软件 post 路径，
+  也不是 worker 唤醒；`poll_call` 仅 0.1 µs/call，排除轮询空转。
+- **残差 66.2 不是漏埋点**：4 MiB 被切成 31.9×~128 KiB 并发 post，worker 指标是单切片口径，
+  不能对请求级总量直接求和；请求级 `wait 153 ≈ 首片延迟 + 32 片流水尾巴`。
+  `post_to_cq 56.4` 是 32 片流水下的单切片均值，不能和 E3-U 的裸 86.4（整请求）直接比。
+- 本轮按任务要求**不下改法结论**；下一步 E3-W 用切片大小 A/B 验证 32 片流水是否是 +94 的来源。
+
+**池身份更正（R19）**
+
+- 4MB b **1/1（batch=1）**：`registered CPU staging pool = 0`；只有 client buffer 池。
+- 4MB b **16/16** 与 **8MB b 16/16（batch=16）**：两个池都在用
+  （client 池 + UB staging 池 2 GiB）。因此 E3-N 的 16/16 收益（+19.6% / +25.1%）
+  含两个池；1/1 的 +16.2% / +13.5% 只含 client 池，无歧义。
+- **8MB b 16/16 的池身份已确认**；E3-G 的 `MC_UB_STAGING_POOL_SIZE=4294967296`
+  修复根因是 UB staging 池，方向正确。E3-N 报告 §3.9 需按此更正。
+- 代码零改动；只给 `mc_bench_point.sh` 加 `MC_UB_WORKER_DIAG` /
+  `MC_UB_WORKER_DIAG_INTERVAL_MS` 透传，不设时行为不变。
+
+**产物**：R20 `R20_20261030_ub_breakdown`（meta、summary、breakdown、worker/transfer 日志、
+pool_identity、脚本副本）；R19 下归档 `e3n_min.patch`。
+
 ---
 
-# E3-N-R（待执行）· E3-N 补丁回传与本地归档
+# E3-N-R（已关闭 · 2026-10-30）· E3-N 补丁回传与本地归档
 
 > 目的：测试 Agent 不能 push，E3-N 的 3 文件 34 行改动目前只在 node4 本地 build；
 > 外部必须掌握同一份代码，后续 E3-V/优化才能对照。**只回最小 diff，不传整文件、
@@ -1194,3 +1242,63 @@
 
 - 外部本地 `D:\gds性能\patches\E3-N\`：patch、sha256、README；
 - **不 push 到公开仓，不写进报告**；只在本地保管。
+
+## 回执（2026-10-30，已收）
+
+- 累计 diff 265 行（E3-I 220 + E3-N 34 + 其它 11）；E3-N 单独 diff = **3 文件 / 34 行**，
+  不含 E3-I，不含脚本/日志。
+- patch：3768 B / 61 行；sha256 `a19d3290d2198fb14d478306036805284fad60ecd5c394c5d335bc0e43c81983`；
+  md5 `9c469b6fa1ecf00f63853393cd5ef211`。
+- 在纯 d371e227 上 `git apply --check`：3 个 hunk 全部成功
+  （real_client.cpp hunk#2 offset −72；ub_transport.cpp hunk#1/#2 offset −11）；
+  apply 后 `git diff --stat` = 3 files / 34 insertions。外部已复核并归档。
+- env：`MC_UB_STAGING_POOL_PIN`；未设 = 关闭，只有 `"1"` 才 pin。
+- 调用点：
+  - client buffer 池：`real_client.cpp : RealClient::setup_internal`，池创建后；
+  - UB staging 池：`ub_transport.cpp : UbTransport::acquireStaging`，分配+注册后。
+- 析构：`UbTransport::~UbTransport` 已接 `cudaHostUnregister`（顺序 unregisterLocalMemory →
+  cudaHostUnregister → ub_free_memory，仅 pin 成功时）；**client buffer 池没有配对的
+  `cudaHostUnregister`**，实验进程退出可接受，上生产需在 allocator 析构补。
+- 8MB b 16/16 池身份已由 E3-V 确认：两个池都在用；E3-G 根因是 UB staging 池，方向正确。
+- 本地归档：`D:\gds性能\patches\E3-N\`（patch、README、sha256），不 push 公开仓。
+
+---
+
+# E3-W（待执行）· UB 切片大小 A/B（4MB b 1/1；验证 32 片流水）
+
+> 目标：E3-V 的可归因首大头是 `post→CQ 56.4 µs/片`，残差 66.2 µs 是 31.9 片流水的尾巴；
+> 本轮用 `MC_SLICE_SIZE` 把片数从 32 降到 16/8/4/1，验证 UB 180 的 +94 是否主要来自切片流水。
+> **只调客户端 env，不改代码、不改交付表；R21。**
+
+## 前置
+
+1) 先记录当前 `MC_SLICE_SIZE`（E3-V 31.9 片/请求 ≈ 128 KiB；确认脚本是否设了 131072）。
+2) `MC_SLICE_SIZE` 只认十进制字节：`131072 / 262144 / 524288 / 1048576 / 4194304`；
+   写 `1M` 会被 `atoi` 解析成 1，回退默认，视为无效。
+3) 每档用 worker 日志的 `posted_slices / completed_slices / 请求数` 确认实际片数变少；
+   片数没变就停，先查 env 是否生效。
+4) 4 MiB 单 WR 可能被 NIC/驱动拒绝；post 失败/超时立即停手，退回 1 MiB/2 MiB，不硬跑。
+5) 不改 node2/阵列/交付表；只在 node4 客户端加 env。
+
+## 测试
+
+- 场景：4MB b 1/1；`--local_buffer_size=2G`、`--global_segment_size=0`、
+  `numactl --cpunodebind=0`、batch=1、60 s；沿用 E3-N 的 pin（`MC_UB_STAGING_POOL_PIN=1`）。
+- 档位：`131072`（当前基线）、`262144`、`524288`、`1048576`、`4194304`；同窗口。
+- 每档 2 轮 60 s；基线/最佳档补到 3 轮；`MC_UB_WORKER_DIAG=1`、
+  `MC_HIFREQ_LOG_SAMPLE_RATE=1` 只用于确认片数/分段，记录开销。
+- 每档记录：transfer_data total、submit/wait、worker `posted_slices`、`slices/请求`、
+  `post_to_cq`、`failed`、node2/node4 load。
+
+## 判据
+
+- 片数下降与 total 下降同向，且 1 片 total ≈ 86–110 µs → **+94 主要来自切片流水**；
+  下一步可把 UB slice 调大（需评估目标端/注册/兼容性）。
+- 片数下降但 total 基本不变 → 限制在单 WR/URMA 服务或目标端，转逐片时间线，不再调 slice。
+- 任何档 `failed>0` 或 post 超时：停，不把失败点写成交付；记录错误和档位。
+- 不改交付表；R21。
+
+## 产物
+
+- R21_20261030_slice_ab：meta.md、summary.csv、worker 过滤日志、env、命令、load；
+- 台账；不改交付表。
