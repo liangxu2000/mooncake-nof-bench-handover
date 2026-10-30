@@ -1164,3 +1164,32 @@
   `ub_worker_*.log`（过滤后的 `ub_worker_breakdown`）、`batch_get_*.log`
   （过滤后的 `batch_get_data_breakdown`）、命令、env、load；
 - 台账；不改交付表。
+
+---
+
+# E3-N-R（待执行）· E3-N 补丁回传与本地归档
+
+> 目的：测试 Agent 不能 push，E3-N 的 3 文件 34 行改动目前只在 node4 本地 build；
+> 外部必须掌握同一份代码，后续 E3-V/优化才能对照。**只回最小 diff，不传整文件、
+> 不传构建产物、不传日志。**
+
+## 回传内容（纯文本，分条）
+
+1) `git rev-parse HEAD`、`git status --short`、`git diff --stat <E3-N 前基线>`；
+2) E3-N 的最小 diff（只含 pin 相关 hunk，含文件路径和上下文行），
+   用 `base64 -w0` 编成一行；同时给 diff 的 sha256；
+3) 编译命令、pin 的 env 名称/默认值/取值；
+4) pin 调用点（哪个文件哪个函数）、`cudaHostUnregister` 析构是否已接；
+5) 若基线里已有 E3-I/其他本地补丁，说明如何从累计 diff 中剥离 E3-N 部分。
+
+## 判据
+
+- diff 能 `git apply --check` 到 d371e227（或说明所需前置补丁）；
+- 变更行数与回执的 3 文件/34 行一致（上下文行不计）；
+- 不包含 E3-I 埋点、日志、构建脚本等无关改动；
+- 回传后外部本地 `git apply` 成功，`git diff --stat` 与回执一致。
+
+## 产物
+
+- 外部本地 `D:\gds性能\patches\E3-N\`：patch、sha256、README；
+- **不 push 到公开仓，不写进报告**；只在本地保管。
