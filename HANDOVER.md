@@ -88,7 +88,8 @@
 | E3-W | 2026-10-30 | UB 切片大小 A/B：64K/128K/256K/512K/1M/4M（4MB b 1/1） | 已关闭 | 63.9→1 片 total 180.3→157.0（−12.9%）；wait 恒 153；切片只占 ~23，固定 ~67 |
 | E3-X | 2026-10-30 | UB 固定 wait ~67 µs：poll spin/sleep A/B（4MB b 1/1） | 已关闭 | sleep=0：wait 153→90.3、total 178.3→94.7；4M+0 b 1/1 483.8；固定 67 来自检测周期 |
 | E3-Y | 2026-10-30 | busy poll 的 16/16 代价：sleep 0/10/50 × slice 4M（4MB b） | 已关闭 | 16/16 11.41 GiB/s 三档不变；CPU 6.5→16.8 核；4M vs 64K +15.7%；保留默认 sleep |
-| E3-Z | 2026-10-30 | 4M slice 外推：8MB b 16/16 + d 16/16（default sleep） | 待执行 | — |
+| E3-Z | 2026-10-30 | 4M slice 外推：8MB b 16/16 + d 16/16（default sleep） | 已关闭 | 8MB b 4M 11.43 vs 64K 10.20（+12.1%）；d 11.39/11.39 无差异（NoF 不消费 slice） |
+| E3-AA | 2026-10-30 | 中间 slice 选择：16/16 的 256K/512K/1M vs 4M（4MB/8MB b） | 待执行 | — |
 
 ---
 
@@ -1477,7 +1478,10 @@ sleep=0 时 `sleep_us=0`。12 点严格交替。
 
 ---
 
-# E3-Z（待执行）· 4M slice 外推：8MB b 16/16 + d 16/16（default sleep）
+# E3-Z（已关闭 · 2026-10-30）· 4M slice 外推：8MB b 16/16 + d 16/16（default sleep）
+
+> 已收，回执见下方。**8MB b：4M 11.43 vs 64K 10.20（+12.1%），可外推；
+> d 4M/64K 都是 11.39，但这不是收益——NoF 路径不消费 `MC_SLICE_SIZE`，两臂是同一配置。**
 
 > 目标：E3-Y 已证明 4M slice 在 4MB b 16/16 把 9.99→11.41（96.4% PCIe）；
 > 本轮验证能否外推到 **8MB b 16/16** 和 **d 16/16**，决定 4M 是否作为生产候选。
@@ -1506,4 +1510,65 @@ sleep=0 时 `sleep_us=0`。12 点严格交替。
 ## 产物
 
 - R24_20261030_slice_8mb_d：meta、summary.csv、worker 过滤日志、CPU/load、env、命令；
+- 不改交付表；脚本 diff 不用回传（只记 env/md5）。
+
+## 回执（2026-10-30，已收）
+
+**结果（16 线程 × batch 16，pin=1，默认 poll 50/50，3×60 s，12 点 failed=0）**
+
+| 臂 | 场景 | slice | GiB/s | avg µs | P99 µs | CPU 核 |
+| --- | --- | --- | --- | --- | --- | --- |
+| z1 | b 8MB | 4M | **11.43** | 174808 | 176161 | 8.66–9.37 |
+| z2 | b 8MB | 64K | 10.20 | 195745 | 199229 | 7.16–7.91 |
+| z3 | d 4MB | 4M | 11.39 | 87793 | 111149 | 2.33–2.41 |
+| z4 | d 4MB | 64K | 11.39 | 87787 | 113246 | 2.27–2.37 |
+
+- **8MB b：4M 11.43 vs 64K 10.20 = +12.1%**；11.43 = PCIe pinned 11.84 的 **96.5%**；
+  64K 的 submit 73→1452 µs（2048 片/批）。8MB staging pool 两臂均 4 GiB 生效。
+- **d 的 +0.0% 不是收益**：z3/z4 的 `ub_worker_breakdown` 全程 `iterations=2,
+  dequeued_slices=0, post_calls=0`，且没有 `registered CPU staging pool` 行；
+  `MC_SLICE_SIZE` 的消费点 `ub_transport.cpp:693` 不在 d 的 NoF 读路径上。
+  两臂实际是同一配置，不能当作“4M 对 d 无害/有益”的 A/B。
+- 8MB avg 174.8 ms ≈ 4MB 87.5 ms 的 2 倍，在飞 2 GiB ÷ 11.7 = 179 ms，Little 定律吻合。
+- 偏差/风险：z1 的 `ub_worker_breakdown` 只有 68 行（应 ~120），
+  `slices_per_req/queue_wait/post_to_cq` 不可用于精确拆解；z1 只有吞吐/时延/CPU 可靠。
+  d 的 `batch_get_data_breakdown total` 1.8 ms 与实测 avg 87.8 ms 差 49 倍，不能当端到端拆解。
+  CPU 仍是 top -H 两帧；load 41.5→48.95。
+- `MC_SLICE_SIZE=4194304` 正好等于 `SPDK_URMA_MAX_IO_SIZE=4194304`，8MB 切 2 片，
+  `post_failed_slices=0` 说明未越界；但单 WR 已到上限，重试粒度/兼容性风险最大。
+- C++/脚本零改动；node2 零改动；R24。
+
+---
+
+# E3-AA（待执行）· 中间 slice 选择：16/16 的 256K/512K/1M vs 4M（4MB/8MB b）
+
+> 目标：1/1 六档显示 **256K→4M 只差 6 µs**，4M 在 1/1 不是必需；
+> 16/16 只测了 64K 与 4M 两端，中间档未测。本轮找 **能拿到 4M 大部分收益、
+> 但单 WR 更小/重试粒度更安全** 的 slice，避免直接上 4M（正好等于 URMA 上限）。
+> 默认 sleep=50、pin=1；只调 env，不改代码；不改交付表；R25。
+
+## 测试
+
+1) **4MB b 16/16**：slice `65536 / 262144 / 524288 / 1048576 / 4194304`
+   5 臂 ×3×60 s；默认 sleep=50；pin=1；batch=16、16 线程。
+2) **8MB b 16/16**：slice `524288 / 1048576 / 4194304` 3 臂 ×3×60 s；
+   64K 基线用 E3-Z 的 10.20，不重复跑；`--local_buffer_size=4G`、
+   `MC_UB_STAGING_POOL_SIZE=4294967296`。
+- 共 24 点，failed=0；同窗口；四/八臂按轮交错执行。
+- 记录：吞吐、avg/P99、failed、worker `posted_slices/请求`、CPU、load；
+  确认每档片数真的变（4MB：64/16/8/4/1 per key；8MB：16/8/4/2 per key）。
+- 不改 C++；node2/阵列/交付表不动。
+
+## 判据
+
+- 以 4M 为上限：选 **吞吐 ≥ 4M 的 95%** 的最小 slice
+  （4MB ≥10.85 GiB/s；8MB ≥10.86 GiB/s），且 failed=0；
+- 若 1M ≥97% 且 512K 也 ≥95% → 优先 512K/1M（重试粒度更小）；
+- 若只有 4M 能过 95% → 保留 4M，并在报告注明“单 WR 到 URMA 上限”的风险；
+- 任何档 failed>0 / post 超时：停，记录，不写交付。
+- 不改交付表；R25。
+
+## 产物
+
+- R25_20261030_slice_mid：meta、summary.csv、worker 过滤日志、CPU/load、env、命令；
 - 不改交付表；脚本 diff 不用回传（只记 env/md5）。
