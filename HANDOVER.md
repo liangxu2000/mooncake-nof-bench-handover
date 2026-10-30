@@ -87,7 +87,8 @@
 | E3-V | 2026-10-30 | UB 180 µs 拆解：client submit/wait + worker queue/post/CQ | 已关闭 | submit 27.0 / wait 153.0；post→CQ 56.4/片；残差 66.2 是 32 片流水尾巴；batch=16 两池都在用 |
 | E3-W | 2026-10-30 | UB 切片大小 A/B：64K/128K/256K/512K/1M/4M（4MB b 1/1） | 已关闭 | 63.9→1 片 total 180.3→157.0（−12.9%）；wait 恒 153；切片只占 ~23，固定 ~67 |
 | E3-X | 2026-10-30 | UB 固定 wait ~67 µs：poll spin/sleep A/B（4MB b 1/1） | 已关闭 | sleep=0：wait 153→90.3、total 178.3→94.7；4M+0 b 1/1 483.8；固定 67 来自检测周期 |
-| E3-Y | 2026-10-30 | busy poll 的 16/16 代价：sleep 0/10/50 × slice 4M（4MB b） | 待执行 | — |
+| E3-Y | 2026-10-30 | busy poll 的 16/16 代价：sleep 0/10/50 × slice 4M（4MB b） | 已关闭 | 16/16 11.41 GiB/s 三档不变；CPU 6.5→16.8 核；4M vs 64K +15.7%；保留默认 sleep |
+| E3-Z | 2026-10-30 | 4M slice 外推：8MB b 16/16 + d 16/16（default sleep） | 待执行 | — |
 
 ---
 
@@ -1414,7 +1415,10 @@ sleep=0 时 `sleep_us=0`。12 点严格交替。
 
 ---
 
-# E3-Y（待执行）· busy poll 的 16/16 代价（4MB b）
+# E3-Y（已关闭 · 2026-10-30）· busy poll 的 16/16 代价（4MB b）
+
+> 已收，回执见下方。**结论：16/16 下 busy poll 零收益、CPU 2.6×；4M slice 才是关键
+> （11.41 vs 64K 9.86，+15.7%）。16/16 保留默认 sleep=50；1/1 才用 sleep=0。**
 
 > 目标：E3-X 在 1/1 上把 UB 180→94.7，但 busy poll 每线程占一个自旋核；
 > 16/16 有 16 个客户端线程，CPU 争抢/worker 饿死完全未知。本轮决定
@@ -1443,4 +1447,63 @@ sleep=0 时 `sleep_us=0`。12 点严格交替。
 ## 产物
 
 - R23_20261030_busy_poll_16：meta、summary.csv、worker 过滤日志、CPU 采样、env、命令、load；
+- 不改交付表；脚本 diff 不用回传（只记 env/md5）。
+
+## 回执（2026-10-30，已收）
+
+**结果（b 16/16，4 MiB，pin=1，diag=1，3×60 s，12 点 failed=0）**
+
+| 格 | slice | sleep | GiB/s | avg µs | P99 µs | 进程 CPU 核 | >0.5 核线程 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| g1 | 4M | 0 | 11.41 | 87547 | 88080 | 16.49–16.98 | 17/19 |
+| g2 | 4M | 10 | 11.40 | 87589 | 88080 | 7.92–8.55 | 4–7/19 |
+| g3 | 4M | 50（默认） | 11.41 | 87554 | 88080 | 6.16–6.73 | 1/19 |
+| g4 | 64K | 0 | 9.86 | 101378 | 103809 | 18.16–18.26 | 18/19 |
+
+- **sleep 0/10/50 在 4M 下吞吐都是 11.41/11.40/11.41，wait_blocked 87143/87211/87164
+  （极差 68 µs）→ 16/16 旋钮失效**；busy poll 只把 CPU 从 6.5 核抬到 16.8 核（2.6×）。
+- **4M vs 64K（都 sleep=0）：11.41 vs 9.86 = +15.7%**；64K 的 submit 61→753 µs、
+  wait +13.4 ms（1024 片/批的开销）。
+- 11.41 GiB/s = E3-U/R18 PCIe pinned 上限 11.84 的 **96.4%**，系统已是**吞吐饱和**；
+  Little's law：1 GiB ÷ 11.7 GiB/s = 87.3 ms ≈ 实测 avg 87.5 / wait_blocked 87.1。
+  单批 87 ms 全是排队，sleep 的 ~50 µs 只占 0.06%。
+- **结论**：16/16 保留默认 sleep=50；busy poll 只在 1/1 低并发有价值；
+  4M slice 在 1/1 和 16/16 都有效，是主收益。若必须一套配置通吃，sleep=10 是折中
+  （16/16 多 1.7 核、零吞吐收益；1/1 略有收益）。
+- 偏差/风险：CPU 是 `top -H` 8 s/20 s 两帧，不是 pidstat 平均；slices/post_to_cq 在
+  16/16 的分母是“一批 16 keys”，g1 的 73440 µs 不可与 1/1 的 86 µs 比；
+  load 43.7→55.5，部分来自共用机他人；9/9、32/32、c/d 未测。
+- C++/脚本零改动；node2 零改动；R23。
+
+---
+
+# E3-Z（待执行）· 4M slice 外推：8MB b 16/16 + d 16/16（default sleep）
+
+> 目标：E3-Y 已证明 4M slice 在 4MB b 16/16 把 9.99→11.41（96.4% PCIe）；
+> 本轮验证能否外推到 **8MB b 16/16** 和 **d 16/16**，决定 4M 是否作为生产候选。
+> 默认 `MC_STORE_UB_POLL_SLEEP_US=50`（16/16 不用 busy poll）；只调 env，不改代码；
+> 不改交付表；R24。
+
+## 测试
+
+1) **8MB b 16/16**：`--local_buffer_size=4G`、`--global_segment_size=0`、
+   `MC_UB_STAGING_POOL_SIZE=4294967296`、pin=1、batch=16、16 线程、60 s；
+   `MC_SLICE_SIZE` 4M vs 64K，2 臂 ×3 轮。
+2) **d 16/16（4MB）**：pin=1、batch=16、16 线程、60 s；`MC_SLICE_SIZE` 4M vs 64K，
+   2 臂 ×3 轮；其余同 4MB 协议。
+- 共 4 臂 ×3 轮 = 12 点，failed=0；同窗口。
+- 记录：吞吐、avg/P99、failed、worker `queue_wait/post_to_cq`、CPU、load；
+  8MB 额外记录 `registered CPU staging pool` 与 `MC_UB_STAGING_POOL_SIZE` 生效值。
+- 不改 C++；node2/阵列/交付表不动。
+
+## 判据
+
+- 8MB b：4M 比 64K ≥ +5% → 4M 可作 8MB 生产候选；若持平/变差，8MB 保留 64K；
+- d：4M 不劣于 64K（<3% 回退）才保留；若 d 变差，按场景分别配置；
+- 任何格 `failed>0`：停，记录，不写交付；
+- 不改交付表；R24。
+
+## 产物
+
+- R24_20261030_slice_8mb_d：meta、summary.csv、worker 过滤日志、CPU/load、env、命令；
 - 不改交付表；脚本 diff 不用回传（只记 env/md5）。
