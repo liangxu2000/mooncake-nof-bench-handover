@@ -82,6 +82,7 @@
 | E3-T | 2026-10-29 | 汇总 R16/R17 c/d 时延对照表 | 已关闭 | c 1/1 avg +6.7%/P99 +15%；d P50 −4.7%/P99 +7.9%；16/16 持平；latency_64K_vs_256K.md/csv；P90/P99.9/P99.99/Pmax 未在 summary.csv |
 | E3-U | 2026-10-29 | 4 MiB 单请求 vs 多请求：UB/PCIe 线速验证 | 已关闭 | UB 单请求 86.4 µs（45.1 GiB/s）；PCIe 266 不可达，pinned 334.8/pageable 383；Mooncake UB 180=栈 +94；copy 414=pageable+31；R18 |
 | E3-N | 2026-10-30 | pinned 客户端 buffer 池 A/B（b 主目标；d 对照） | 已关闭 | copy 411/415→336 µs；b 568 / d 681；16/16 9.99 / 11.38；报告 §3.9 |
+| E3-V | 2026-10-30 | UB 180 µs 拆解：client submit/wait + worker queue/post/CQ | 待执行 | — |
 
 ---
 
@@ -1098,3 +1099,64 @@
   复核前只保留“设 4 GiB 后 9.43 GiB/s / 211.6 ms 有效”这一事实。
 - 2 GiB 常驻 pin 的生产影响未评估。
 - 结论：copy 杠杆已做掉；下一步 E3-V 给 UB transport 打点，拆 180 的构成。
+
+---
+
+# E3-V（待执行）· UB 180 µs 拆解（4MB b 1/1；只测量、不改代码）
+
+> 目标：E3-N 后 b 568 = UB 180 + copy 336 + 控制 52；copy 已经到底，
+> 剩余 93 µs 全在 UB。先把 180 拆成 **client submit / worker 排队 / post / 完成/轮询**，
+> 找到第一大头，再决定下一轮改哪里。**本轮不改代码、不改交付表；R20。**
+> 仓内 d371e227 已有诊断开关（`ub_diagnostics.h`），不需要新增埋点。
+
+## 前置（代码事实，先确认再跑）
+
+1) `MC_UB_WORKER_DIAG=1` 打开 worker 区间统计，日志前缀 `ub_worker_breakdown`；
+   字段含 `queue_wait_avg_us / queue_wait_max_us / post_call_us / post_to_cq_avg_us /
+   post_to_cq_max_us / poll_call_us / active_loop_gap_max_us / endpoint_prepare_us /
+   dequeue_us / posted_slices / completed_slices`。
+2) `MC_HIFREQ_LOG_SAMPLE_RATE=1` 让每个请求都打 `batch_get_data_breakdown`；
+   字段含 `setup_us / submit_us / wait_blocked_us / result_us / total_us`。
+3) 两个 env 都是上游已有，只影响日志；若 build 里没有，停手回报，不要自己加代码。
+4) 不改 node2/阵列/交付表；只在 node4 客户端加 env。
+
+## 测试（4MB b，pin B 臂）
+
+- 协议：`--local_buffer_size=2G`、`--global_segment_size=0`、
+  `numactl --cpunodebind=0`、chunk 默认、batch=1、60 s。
+- 沿用 E3-N 的 pin 开启（copy 336），**只在 b 上跑**；d 不跑。
+- **先做 10 s diag 开销对照**：同一窗口 diag=0 与 diag=1 各 1 次，
+  若 total 偏移 >3%，`MC_HIFREQ_LOG_SAMPLE_RATE` 降到 0.1 或 0.5，并在回执注明。
+- 正式：diag=1、sample=1，跑 3 轮 60 s；每轮前清日志。
+- 记录 node2/node4 load、pin 返回值、`failed`。
+
+## 要出的表
+
+| 层 | 指标 | 期望/用途 |
+| --- | --- | --- |
+| client | `submit_us` | submitTransfer 墙钟（slice 分配/准备/入队） |
+| client | `result_us` | 等待完成（含 worker 排队 + post + URMA + 轮询检测） |
+| worker | `queue_wait_avg_us` | submit 入队 → worker 取出（唤醒/排队） |
+| worker | `post_call_us` | post send 调用耗时 |
+| worker | `post_to_cq_avg_us` | post → CQ（含软件轮询延迟，不是纯 DMA） |
+| worker | `poll_call_us` / `active_loop_gap_max_us` | 轮询检测开销/空转间隙 |
+| 合计 | `submit + result` | 应 ≈ 180；给出各层占比与残差 |
+
+- 客户端 `batch_get_data_breakdown` 取中位；worker `ub_worker_breakdown` 取稳态区间
+  （去掉第一段和最后一段），按 `completed_slices` 加权。
+- 同时给 `setup_us`、`wait_blocked_us`、`total_us` 作上下文。
+- 若 `post_to_cq_avg_us ≈ 86`、`queue_wait ≈ 80`，说明 180 主要是 worker 唤醒 + DMA；
+  若 `post_call_us` 或 `poll_call_us` 很大，则是软件路径。**不要在本轮下改法结论，先出数。**
+
+## 判据
+
+- 第一大头 >60 µs 即认为定位成功，给出它属于 client/worker-post/URMA/轮询 哪一层；
+- 三层相加与 180 的残差 >20 µs 时，检查 slice 数、batch、pin、日志采样开销；
+- diag 开关对 total 的影响必须 <3%，否则只把 diag 当定性参考。
+
+## 产物
+
+- R20_20261030_ub_breakdown：meta.md、summary.csv、breakdown.csv、
+  `ub_worker_*.log`（过滤后的 `ub_worker_breakdown`）、`batch_get_*.log`
+  （过滤后的 `batch_get_data_breakdown`）、命令、env、load；
+- 台账；不改交付表。
