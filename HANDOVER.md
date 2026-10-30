@@ -15,7 +15,7 @@
 4. 任务正文统一用《接管说明》§1.2 模板。
 5. **资料与回执格式**：只给结论、≤20 行原始输出片段、`文件:行号`、diff；脚本/env 摘录 ≤15 行，CSV 只给相关行（≤5 行）。
 6. 若出现代码补丁，放在 `patches/`，一律 `git diff`（必要时 `-U1` 压缩上下文）+ `base64 -w0` 单行 + patch/b64 两份 md5；落地前先 `git apply --check`。
-7. **代码保管（长期）**：所有代码改动（含 env 门控、埋点、本地修正）都必须把最小 diff 回传给开发指挥 Agent；由外部本地归档、核对并在最终阶段统一提交 git。测试 Agent 继续只 pull、不 push；回执只给 diff，不传整文件、构建产物或日志。
+7. **代码保管（长期）**：只有**要进 Mooncake git 仓的源码改动**（C++/头文件/构建配置等）必须把最小 diff + `base64 -w0` + sha256 回传给开发指挥 Agent；由外部本地归档、核对并在最终阶段统一提交 git。**仓外测试脚本/harness（如 `mc_bench_point.sh`）不需要回传 diff**；只需在 R*/meta.md 记录 env、命令、脚本 md5，供复现即可，因为它们不会进 git。测试 Agent 继续只 pull、不 push；回执不传整文件、构建产物或日志。
 
 ## 结果与交付约定（从 E3-B 起生效）
 
@@ -86,7 +86,8 @@
 | E3-N-R | 2026-10-30 | E3-N 最小 diff 回传与本地归档 | 已关闭 | 3 文件/34 行；sha256 a19d…；d371e227 apply 成功；client 池析构 unregister 未接 |
 | E3-V | 2026-10-30 | UB 180 µs 拆解：client submit/wait + worker queue/post/CQ | 已关闭 | submit 27.0 / wait 153.0；post→CQ 56.4/片；残差 66.2 是 32 片流水尾巴；batch=16 两池都在用 |
 | E3-W | 2026-10-30 | UB 切片大小 A/B：64K/128K/256K/512K/1M/4M（4MB b 1/1） | 已关闭 | 63.9→1 片 total 180.3→157.0（−12.9%）；wait 恒 153；切片只占 ~23，固定 ~67 |
-| E3-X | 2026-10-30 | UB 固定 wait ~67 µs：poll spin/sleep A/B（4MB b 1/1） | 待执行 | — |
+| E3-X | 2026-10-30 | UB 固定 wait ~67 µs：poll spin/sleep A/B（4MB b 1/1） | 已关闭 | sleep=0：wait 153→90.3、total 178.3→94.7；4M+0 b 1/1 483.8；固定 67 来自检测周期 |
+| E3-Y | 2026-10-30 | busy poll 的 16/16 代价：sleep 0/10/50 × slice 4M（4MB b） | 待执行 | — |
 
 ---
 
@@ -1340,13 +1341,10 @@ pool_identity、脚本副本）；R19 下归档 `e3n_min.patch`。
 
 ---
 
-# E3-X（待执行）· UB 固定 wait ~67 µs：poll spin/sleep A/B（4MB b 1/1）
+# E3-X（已关闭 · 2026-10-30）· UB 固定 wait ~67 µs：poll spin/sleep A/B（4MB b 1/1）
 
-> 目标：E3-W 证明 wait ~153 µs 与片数无关；1 片时 `post→CQ 86.2` 已等于裸层 86.4，
-> 但 wait 还多 **66.8 µs**。代码里 store 侧 UB 完成等待默认
-> `MC_STORE_UB_POLL_SPIN_US=50`、`MC_STORE_UB_POLL_SLEEP_US=50`：
-> 先自旋 50 µs，之后每轮 `sleep_for(50us)` 再查。**这个“发现完成”的延迟很可能就是固定 ~67 µs。**
-> 本轮只调 env，不改代码、不改交付表；R22。
+> 已收，回执见下方。**结论：固定 ~67 µs 就是“睡 50 µs 再查”的完成发现延迟。**
+> sleep=0 后 wait 153→90.3、total 178.3→94.7；4M+0 的 b 1/1 到 483.8 µs。
 
 ## 前置（代码事实）
 
@@ -1385,3 +1383,64 @@ pool_identity、脚本副本）；R19 下归档 `e3n_min.patch`。
 - R22_20261030_ub_poll_ab：meta、summary.csv、worker/transfer 过滤日志、env、命令、load；
 - 顺带回传 `mc_bench_point.sh` 2 行 diff 的 `base64 -w0` + sha256（E3-W 只给了明文 diff/md5）；
 - 不改交付表。
+
+## 回执（2026-10-30，已收）
+
+**前置核实**：现场日志逐点确认 `UB completion polling: spin_us=50 sleep_us=50`；
+sleep=0 时 `sleep_us=0`。12 点严格交替。
+
+**正式矩阵（4 格 × 3 轮 × 60 s，12 点 failed=0）**
+
+| 格 | slice | sleep | 片数 | GiB/s | avg µs | submit | wait | total | post→CQ |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| g1 | 65536 | 默认 50/50 | 63.85 | 6.84 | 570.67 | 25.0 | 153.0 | 178.33 | 53.05 |
+| g2 | 65536 | 0 | 63.85 | 7.51 | 520.26 | 28.33 | 101.0 | 129.33 | 53.99 |
+| g3 | 4194304 | 默认 50/50 | 1.0 | 7.13 | 547.65 | 3.67 | 153.0 | 157.67 | 86.26 |
+| g4 | 4194304 | 0 | 1.0 | 8.07 | **483.77** | 3.67 | **90.33** | **94.67** | 86.32 |
+
+- **决定性证据**：g4 `wait−post→CQ = 90.33−86.32 = 4.0`；g3 是 66.7。
+  那 67 µs 几乎全部来自“睡 50 µs 再查”的检测周期；去掉后只剩 4 µs。
+- 三条判据全中：sleep=0 wait 75–105（g4 90.3 / g2 101）；4M+0 total 90–110（94.7）；
+  b 1/1 480–500（483.77）。
+- 边界：g4 的 wait 90.33 里 post→CQ 86.32 已是 URMA 单请求往返（≈E3-U 86.4）；
+  UB 段剩余可优化空间只有 **~4 µs**，再往下只能动链路/目标端。
+- 风险/偏差：busy poll 有旁证（64K 档 queue_wait 18.22→20.77，+2.5 µs；submit +3.3）；
+  post_to_cq 偶发尖峰（g2_r2 519、g4_r3 470）；g2 wait=101 因 64K 逐片排队；
+  **16/16 未测，busy poll 每线程一个自旋核，CPU 代价未知**；未测中间 sleep/ spin/ d/ 长稳态。
+- 脚本 md5 更正：E3-W 前基线是 `46adf724…`（不是 `cf04e767…`，那是 R19）；E3-W 后
+  `8a0c5c78…`，E3-X 后 `b2a43fb4…`。**按 2026-10-30 新规则，脚本 diff 不回传、不归档；
+  只在 meta 记 env/命令/md5。**
+- C++ 零改动；node2 零改动；R22。
+
+---
+
+# E3-Y（待执行）· busy poll 的 16/16 代价（4MB b）
+
+> 目标：E3-X 在 1/1 上把 UB 180→94.7，但 busy poll 每线程占一个自旋核；
+> 16/16 有 16 个客户端线程，CPU 争抢/worker 饿死完全未知。本轮决定
+> **能不能上生产设置**：`sleep=0`、`sleep=10`、默认 `50` 三档，固定最佳 slice=4M。
+> 只调 env，不改代码、不改交付表；R23。
+
+## 测试（4MB b 16/16）
+
+- 协议：pin=1、2G 池、gseg=0、绑 N0、batch=16、16 线程、60 s；
+  `MC_SLICE_SIZE=4194304`（E3-W/E3-X 最佳），`MC_STORE_UB_POLL_SLEEP_US` 三档：
+  `0`、`10`、默认 `50`（`spin` 保持默认 50）。
+- 加一个对照：`slice=65536` + `sleep=0`，确认 4M 在 16/16 是否仍优。
+- 4 格 × 3 轮 = 12 点，failed=0；同窗口。
+- 记录：吞吐、avg/P99、`failed`、worker `queue_wait/post_to_cq`、**进程/线程 CPU**
+  （`pidstat -t -p <pid> 1` 或 `top -H -b -n1`，至少每格一条）、node4 load。
+- 不改 C++；node2/阵列/交付表不动。
+
+## 判据
+
+- `sleep=0` 的 16/16 吞吐 ≥ 默认（或下降 <3%），且 CPU 有余量 → busy poll 可作候选；
+- 若 16/16 明显下降/worker 饿死 → 用 `sleep=10` 找折中，或保留默认；
+- `4M` 在 16/16 不劣于 `64K` 才保留；否则 1/1 的收益不能外推到 16/16；
+- 任何格 `failed>0`/CPU 打满：停，记录，不把失败点写交付。
+- 不改交付表；R23。
+
+## 产物
+
+- R23_20261030_busy_poll_16：meta、summary.csv、worker 过滤日志、CPU 采样、env、命令、load；
+- 不改交付表；脚本 diff 不用回传（只记 env/md5）。
