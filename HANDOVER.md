@@ -85,7 +85,8 @@
 | E3-N | 2026-10-30 | pinned 客户端 buffer 池 A/B（b 主目标；d 对照） | 已关闭 | copy 411/415→336 µs；b 568 / d 681；16/16 9.99 / 11.38；报告 §3.9 |
 | E3-N-R | 2026-10-30 | E3-N 最小 diff 回传与本地归档 | 已关闭 | 3 文件/34 行；sha256 a19d…；d371e227 apply 成功；client 池析构 unregister 未接 |
 | E3-V | 2026-10-30 | UB 180 µs 拆解：client submit/wait + worker queue/post/CQ | 已关闭 | submit 27.0 / wait 153.0；post→CQ 56.4/片；残差 66.2 是 32 片流水尾巴；batch=16 两池都在用 |
-| E3-W | 2026-10-30 | UB 切片大小 A/B：128K/256K/512K/1M/4M（4MB b 1/1） | 待执行 | — |
+| E3-W | 2026-10-30 | UB 切片大小 A/B：64K/128K/256K/512K/1M/4M（4MB b 1/1） | 已关闭 | 63.9→1 片 total 180.3→157.0（−12.9%）；wait 恒 153；切片只占 ~23，固定 ~67 |
+| E3-X | 2026-10-30 | UB 固定 wait ~67 µs：poll spin/sleep A/B（4MB b 1/1） | 待执行 | — |
 
 ---
 
@@ -1264,11 +1265,10 @@ pool_identity、脚本副本）；R19 下归档 `e3n_min.patch`。
 
 ---
 
-# E3-W（待执行）· UB 切片大小 A/B（4MB b 1/1；验证 32 片流水）
+# E3-W（已关闭 · 2026-10-30）· UB 切片大小 A/B（4MB b 1/1；验证 32 片流水）
 
-> 目标：E3-V 的可归因首大头是 `post→CQ 56.4 µs/片`，残差 66.2 µs 是 31.9 片流水的尾巴；
-> 本轮用 `MC_SLICE_SIZE` 把片数从 32 降到 16/8/4/1，验证 UB 180 的 +94 是否主要来自切片流水。
-> **只调客户端 env，不改代码、不改交付表；R21。**
+> 已收，回执见下方。**两个前提被纠正**：`MC_SLICE_SIZE` 默认是 65536（不是 131072）；
+> R20 的 31.9 片算错，真实 63.9 片。切片只解释 ~23 µs，wait 恒 153 µs。
 
 ## 前置
 
@@ -1302,3 +1302,86 @@ pool_identity、脚本副本）；R19 下归档 `e3n_min.patch`。
 
 - R21_20261030_slice_ab：meta.md、summary.csv、worker 过滤日志、env、命令、load；
 - 台账；不改交付表。
+
+## 回执（2026-10-30，已收）
+
+**前提纠正**
+
+- `MC_SLICE_SIZE` 代码默认是 **65536**（`config.cpp:264` atoi → `config.h:52` 65536 →
+  `ub_transport.cpp:693` kBlockSize）；`mc_ports.env`、`~/.bashrc`、`sudo -n env` 都没有该变量。
+- R20 的“31.9 片/请求”算错，真实 **63.9 片**：错用了 `completed_slices ÷ 两个 worker 区间秒数和`；
+  正确是 `completed_slices ÷ 总请求数 = 6,561,984 / 102,765 = 63.85`。R20 meta 已加更正块。
+- 以 65536 为真基线，共 6 档；片数完全受控，4 MiB 单 WR 被 NIC/驱动接受。
+
+**结果（60 s ×2，基线/最佳补第 3 轮，14 点 failed=0）**
+
+| slice | 片数/请求 | GiB/s | submit µs | wait µs | total µs | post→CQ µs | queue µs |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 65536（默认） | 63.9 | 6.80 | 26.3 | 153.3 | 180.3 | 61.7 | 19.6 |
+| 131072 | 31.9 | 6.86 | 16.0 | 153.5 | 170.0 | 65.5 | 13.0 |
+| 262144 | 16.0 | 7.04 | 9.5 | 153.0 | 163.0 | 66.2 | 10.2 |
+| 524288 | 8.0 | 7.08 | 7.0 | 153.0 | 161.0 | 54.8 | 9.4 |
+| 1048576 | 4.0 | 7.09 | 5.0 | 153.0 | 158.5 | 59.1 | 7.2 |
+| 4194304 | 1.0 | 7.17 | 3.3 | 153.0 | 157.0 | 86.2 | 6.6 |
+
+- **wait 在 6 档恒为 153.0–153.5 µs（极差 0.5）**；只有 submit 随片数单调下降 26.3→3.3。
+- 1 片 `post→CQ 86.2` ≈ E3-U 裸层 86.4；1 片 `wait−post→CQ = 66.8`；
+  64 片时对应值 91.6（含 queue），同量级 → **~67 µs 与片数无关**。
+- `posted_slices ≈ completed_slices`（差 <0.02%），`post_failed_slices` 全档 0。
+- 结论：+94 = 切片流水 ~23（全在 submit）+ 固定 ~71（86 的 URMA 往返 + ~67 固定 wait）；
+  切片调大只能拿回 ~23，1 片 total 仍 157，不是 86–110。判据 A 不成立，判据 B 部分成立。
+- 偏差/风险：基线从 131072 改成 65536（默认就是 64K）；post_to_cq 有偶发尾噪
+  （524288_r1 345、1048576_r1 351）；65536_r1 有冷启动噪声；node4 load 40.0–40.8；
+  node2 零改动；C++ 源码零改动。
+- 产物：R21 `R21_20261030_slice_ab`（14 点，53 文件）。
+- 脚本改动：`mc_bench_point.sh` 仅加 2 行 `MC_SLICE_SIZE` 透传；md5
+  `cf04e767…` → `8a0c5c78…`；不设时行为不变。外部已按 2 行 diff 归档到
+  `D:\gds性能\patches\E3-W\`（无 C++ 变更）。
+
+---
+
+# E3-X（待执行）· UB 固定 wait ~67 µs：poll spin/sleep A/B（4MB b 1/1）
+
+> 目标：E3-W 证明 wait ~153 µs 与片数无关；1 片时 `post→CQ 86.2` 已等于裸层 86.4，
+> 但 wait 还多 **66.8 µs**。代码里 store 侧 UB 完成等待默认
+> `MC_STORE_UB_POLL_SPIN_US=50`、`MC_STORE_UB_POLL_SLEEP_US=50`：
+> 先自旋 50 µs，之后每轮 `sleep_for(50us)` 再查。**这个“发现完成”的延迟很可能就是固定 ~67 µs。**
+> 本轮只调 env，不改代码、不改交付表；R22。
+
+## 前置（代码事实）
+
+1) `transfer_task.cpp` 的 `TransferEngineOperationState::wait_for_completion()`：
+   UB 时 `spin_time = MC_STORE_UB_POLL_SPIN_US`（默认 50），
+   `sleep_time = MC_STORE_UB_POLL_SLEEP_US`（默认 50）；自旋到期后每轮 sleep 再查。
+2) 两个 env 都走 `ReadUbPollDelayUs`：只认十进制整数，0–1,000,000；非法回退默认。
+   `MC_STORE_UB_POLL_SLEEP_US=0` 会恢复 busy polling（日志会打
+   `UB completion polling: spin_us=... sleep_us=...`）。
+3) 先确认当前日志确实是 `spin_us=50 sleep_us=50`；不是就停手回报。
+4) 不改 C++、不改 node2/阵列/交付表；只在 node4 加 env。
+
+## 测试（4MB b 1/1）
+
+- 协议：pin=1（`MC_UB_STAGING_POOL_PIN=1`）、2G 池、gseg=0、绑 N0、batch=1、60 s。
+- 2×2 矩阵（隔离 polling 与切片）：
+  1. `slice=65536` + 默认 poll（基线，应约 180.3）；
+  2. `slice=65536` + `MC_STORE_UB_POLL_SLEEP_US=0`（busy poll）；
+  3. `slice=4194304` + 默认 poll（E3-W 最佳，应约 157.0）；
+  4. `slice=4194304` + `MC_STORE_UB_POLL_SLEEP_US=0`（叠加）。
+- 每格 2 轮 60 s；基线/最佳补到 3 轮；14 点目标 failed=0。
+- 记录：transfer_data `submit/wait/total`、worker `post_to_cq`、node4 load/CPU、
+  `failed`；确认日志里的 `spin_us/sleep_us`。
+- 不改 C++；如 busy poll 导致 CPU 争抢/worker 饿死，记录并停，不硬跑 16/16。
+
+## 判据
+
+- `sleep=0` 让 wait 从 153 降到 ~90（±15）→ **固定 ~67 来自完成发现延迟**；
+  4M+0 的 total 应 ≈90–110；b 1/1 有望到 ~480–500。
+- wait 基本不变 → 固定开销不在 store 轮询，转查 completion callback / worker→client 通知 / 目标端。
+- 任何格 `failed>0` 或 CPU 明显异常：停，记录；不把失败点写成交付。
+- 不改交付表；R22。
+
+## 产物
+
+- R22_20261030_ub_poll_ab：meta、summary.csv、worker/transfer 过滤日志、env、命令、load；
+- 顺带回传 `mc_bench_point.sh` 2 行 diff 的 `base64 -w0` + sha256（E3-W 只给了明文 diff/md5）；
+- 不改交付表。
