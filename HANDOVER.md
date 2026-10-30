@@ -81,7 +81,7 @@
 | E3-S | 2026-10-29 | node2 Raid0 strip 64→256KB 重建 + c/d 测试 | 已关闭（回滚 64KB） | 256KB 变差：c 1/1 −6.5%、d −2.5%、16/16 持平；p50 改善但 p99 变差；已回滚 64KB；R17；交付表未动 |
 | E3-T | 2026-10-29 | 汇总 R16/R17 c/d 时延对照表 | 已关闭 | c 1/1 avg +6.7%/P99 +15%；d P50 −4.7%/P99 +7.9%；16/16 持平；latency_64K_vs_256K.md/csv；P90/P99.9/P99.99/Pmax 未在 summary.csv |
 | E3-U | 2026-10-29 | 4 MiB 单请求 vs 多请求：UB/PCIe 线速验证 | 已关闭 | UB 单请求 86.4 µs（45.1 GiB/s）；PCIe 266 不可达，pinned 334.8/pageable 383；Mooncake UB 180=栈 +94；copy 414=pageable+31；R18 |
-| E3-N | 2026-10-30 | pinned UB staging A/B（b 主目标；d 对照） | 待执行 | — |
+| E3-N | 2026-10-30 | pinned 客户端 buffer 池 A/B（b 主目标；d 对照） | 已关闭 | copy 411/415→336 µs；b 568 / d 681；16/16 9.99 / 11.38；报告 §3.9 |
 
 ---
 
@@ -1007,14 +1007,11 @@
 
 ---
 
-# E3-N（待执行 · 已授权）· pinned UB staging A/B（b 主目标；d 对照）
+# E3-N（已关闭 · 2026-10-30）· pinned 客户端 buffer 池 A/B（b 主目标；d 对照）
 
-> 用户已授权。目标：验证 pageable staging 的 copy 墙；**只改 node4 本地代码（env 门控），
-> 不改 node2/阵列/交付表；R19。**
-> 背景：b 1/1 648 = UB 180 + copy 414 + 控制 54；copy 414 = pageable 383 + 31；
-> E3-U 的 pinned 单 copy 334.8。预期 pin 后 copy 335–366，b 648→569–600。
-> **b 是主目标；d 的 copy 是否来自 UB staging 先确认**：若 d 用 NoF staging，d 不变是正常，
-> 不要当作 pin 失败。
+> 结果已收，报告 §3.9 已更新。**计划假设被实测纠正**：pin 位置不是 UB staging 池，
+> 是 store 层 `client_buffer_allocator_` 的客户端 buffer 池（b/d 共用）。
+> 原计划正文保留在下方作记录；“回执”一节为准。
 
 ## 前置（代码事实）
 
@@ -1057,3 +1054,47 @@
 - R19_20261030_pin_staging：meta.md、summary.csv、breakdown_median.csv、
   env_*.txt、raw_*.log、pin_*.log；
 - 台账；diff（≤15 行）+ build 命令。
+
+## 回执（2026-10-30，已收）
+
+**实际 pin 位置（与计划不同）**
+
+- 4MB b/d 都走 store 层 `client_buffer_allocator_`（`--local_buffer_size=2G`），
+  **pin 打在这个客户端 buffer 池，b/d 共用**；b 场景 `registered CPU staging pool` 计数=0，
+  staging 模式下 `UbTransport::acquireStaging` 池未分配。
+- 因此 E3-N 实际是“pin 客户端 buffer 池”A/B，不是“pin UB staging 池”。
+  原任务的运行方式（b/d、1/1+16/16、同窗口）仍成立。
+
+**结果（4MB，A 未 pin / B pin 2 GiB）**
+
+| 点 | A | B | 变化 |
+| --- | --- | --- | --- |
+| b copy 段 | 411 µs | 336 µs | −18.3% |
+| d copy 段 | 415 µs | 336 µs | −19.0% |
+| b 1/1 | 660.2 µs | 567.9 µs | −14.0%（吞吐等效 +16.2%） |
+| b 16/16 | 8.355 GiB/s | 9.990 GiB/s | +19.6% |
+| d 1/1 | 773.2 µs | 681.3 µs | −11.9%（吞吐等效 +13.5%） |
+| d 16/16 | 9.095 GiB/s | 11.380 GiB/s | +25.1% |
+
+- 20 点 `failed=0`；copy 336 与 E3-U pinned 单 copy 334.8 吻合。
+- d 16/16 11.38 = E3-U PCIe pinned 聚合上限 11.73–11.84 的 96%–97%，高并发已撞 copy 墙。
+- b 568 = UB 180 + copy 336 + 控制 52；离地板 475 剩 93 µs，全在 UB 栈；
+  b 16/16 9.99 的上限由 UB 栈决定（压到 86.4 估可到 ~11–12）。
+
+**pin 证据**
+
+- `cudaHostRegister rc=0`，2 GiB，96.63 ms；拷贝微测 384.3→335.8 µs；
+  `cudaPointerGetAttributes` Other→Host(pinned/registered)。
+- `VmLck=0` 属预期：`pin_user_pages` 记入 `mm->pinned_vm`，不是 `locked_vm`；
+  `ulimit -l` 64 MiB 不构成限制。
+- 改动 3 文件 34 行，默认关闭；`cudaHostUnregister` 析构路径未测。
+
+**口径与未决**
+
+- A 臂 b 1/1 660.2 vs R16 648：node2 load 36–40（308 核）；只做同窗口 A/B，
+  绝对值不与历史批混比。
+- **8MB b 16/16 的池身份待复核**：8MB 用 `--local_buffer_size=4G`；若也走客户端 buffer 池，
+  E3-G 用 `MC_UB_STAGING_POOL_SIZE=4294967296` 修复 91% 失败的根因需重查。
+  复核前只保留“设 4 GiB 后 9.43 GiB/s / 211.6 ms 有效”这一事实。
+- 2 GiB 常驻 pin 的生产影响未评估。
+- 结论：copy 杠杆已做掉；下一步 E3-V 给 UB transport 打点，拆 180 的构成。
