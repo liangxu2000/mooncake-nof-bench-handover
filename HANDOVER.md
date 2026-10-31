@@ -1873,7 +1873,8 @@ sleep=0 时 `sleep_us=0`。12 点严格交替。
 - 采样同第二次：1/1 与 16/1 各 3 轮，1/16 与 16/16 各 2 轮（共 40 个样本，60 s/点）。
 - **干净跑：不开 `MC_HIFREQ_LOG_SAMPLE_RATE`、不开 `MC_UB_WORKER_DIAG`。**
 - **xlsx 输出**：复制权威表为
-  `测试相关资料/交付表/benchmark_Mooncake_R30_20261031_第三次测试.xlsx`；
+  `测试相关资料/第三次测试结果/benchmark_Mooncake_R30_20261031_第三次测试.xlsx`
+  （用户已新建该目录；如无则创建）；
   **只填 4MB 的 a/b/c/d × 4 并发共 16 格**，8MB sheet 保持原样/不参与第三次测试；
   **只写干净正式表的 avg/P50/P90/P99/P99.9/P99.99/Pmax/吞吐，不写打点批的数**；
   原 `我们测试场景的测试结果benchmark.xlsx` 不动。
