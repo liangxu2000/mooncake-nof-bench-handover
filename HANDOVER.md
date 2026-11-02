@@ -96,7 +96,8 @@
 | E3-AE | 2026-10-31 | 方案 A 补齐并发：4MB a/b/c/d × 1/16 + 16/1（sleep 0/50） | 已关闭 | 1/16、16/1 全部饱和；sleep0 零收益、16/1 a +10.12 核；最终只有 1/1 用 sleep0 |
 | E3-AF | 2026-10-31 | 第三次测试：4MB 全表（干净）+ 1/1 打点拆解（独立诊断批） | 暂缓（先做 E3-AH） | c/d 根因优先；预览 xlsx 已由 E3-AG 生成 |
 | E3-AG | 2026-10-31 | 用 R28/R29 已有数据生成 benchmark 格式预览 xlsx（不重跑） | 已关闭 | xlsx 11 728 B；4MB 16 格 176/176 单元格全有值；原表未改；8MB 按用户要求未整理 |
-| E3-AH | 2026-10-31 | node2 stripe 64K→512K A/B：c/d 16/16 + 1/1 回归（含 client chunk A/B） | 待执行 | — |
+| E3-AH | 2026-10-31 | node2 stripe 64K→512K A/B：c/d 16/16 + 1/1 回归（含 client chunk A/B） | 已关闭（回退 64K） | 512K c/d 16/16 +0.1%/+0.0%；c 1/1 −5.1%；chunk512K 100% 失败；已回退 |
+| E3-AI | 2026-10-31 | c/d 1/1 NoF 两段与尾部：target 盘读 vs push + 客户端对齐（不重建） | 待执行 | — |
 
 ---
 
@@ -1979,7 +1980,12 @@ sleep=0 时 `sleep_us=0`。12 点严格交替。
 
 ---
 
-# E3-AH（待执行 · 用户已要求派发）· node2 stripe 64K→512K A/B（c/d）
+# E3-AH（已关闭 · 2026-10-31）· node2 stripe 64K→512K A/B（c/d）
+
+> 已收，回执见下方。**512K stripe 对 c/d 16/16 完全无效（+0.1%/+0.0%），
+> c 1/1 还慢 5.1%；chunk 512K 直接 100% 失败；已回退 64K。
+> 结论：c/d 16/16 不是阵列瓶颈——c 12.68 已等于 a 12.69（GPU HBM write 上限），
+> d 11.39 是 copy 墙。高并发这条线关闭，回到 1/1 的 NoF/尾部。**
 
 > 背景：同事B 的 5–6 盘 4MB 读聚合 46.9 GiB/s；我们 c/d 16/16 只有 12.68/11.39，
 > 约单盘 91%/82%。node2 当前 strip=64K，正好是同事B 实测“大并发崩/STUCK”档；
@@ -2022,4 +2028,64 @@ sleep=0 时 `sleep_us=0`。12 点严格交替。
 
 - R32_20261031_stripe_512k：meta、summary.csv、latency 分位、worker/NoF 日志、env、命令、load；
 - 重建前后配置、回退命令、prefill/verify 记录；
+- 不改交付表；脚本 diff 不用回传（只记 env/md5）。
+
+## 回执（2026-10-31，已收）
+
+**结果（4MB，chunk 128K，3×60 s，failed=0）**
+
+| strip | c 16/16 | d 16/16 |
+| --- | --- | --- |
+| 64K（同窗口基线） | 12.68 GiB/s / 78834 µs | 11.39 / 87767 |
+| 512K | 12.69 / 78781 | 11.39 / 87771 |
+| Δ | +0.1% | +0.0% |
+
+- c/d 的 P50/P90/P99 也几乎逐位相同；512K 完全没效果。
+- c 1/1：512K **493.21 µs** vs 64K/R28 **467.93**（−5.1%，avg +5.4%，P99 712.7）；
+  d 1/1 696.50 vs 693.97（−0.4%）。512K 对低并发 c 有副作用。
+- 64K 基线跨日期逐位重现：c 12.68/78834 vs R28 12.68/78838；d 11.39/87767 vs 87793。
+- **chunk 512K 直接 100% 失败**：`failed=queries×16`，日志首条
+  `cuMemGetHandleForAddressRange failed rc=801`，主体 `task_complete: I/O failed
+  INTERNAL DEVICE ERROR`；已停、回退、未写交付；128K 正常。根因未查，交开发侧。
+- `--verify=true` 在本 build 恒失败（22920/22920）；普通读 `--verify=false` failed=0；
+  prefill 100 keys + 10 s 读冒烟 23207 queries/9.06 GiB/s。后续不要用 verify=true。
+- 重建 11 s、回退 10 s；已恢复 strip 64K online 5/5、prefill 完成；
+  RB_c/d 16/16 12.68/11.38，与基线差 0.1%。
+- **关键结论**：c 16/16 12.68 已等于 a 12.69（GPU HBM write 上限），
+  d 11.39 是 copy 墙（PCIe pinned 11.84 的 96%）。**c/d 高并发不是阵列瓶颈，
+  5 盘 46.9 的余量吃不到；stripe 这条线关闭，512K/1M 不再试。**
+
+---
+
+# E3-AI（待执行）· c/d 1/1 NoF 两段与尾部（不重建）
+
+> 目标：c/d 16/16 已到 GPU 侧上限；剩下的问题只在 1/1：
+> c avg 467.93 与 P50 421.89 的 46 µs 差（尾部）；d P50 622.59 与预期 558.2 的 64.4 + 尾部。
+> 本轮把 NoF 拆成 **target 盘读（SSD→iobuf）** 与 **push（iobuf→initiator）**，
+> 对齐客户端尾部；**不重建、不改 strip、不做全矩阵、不跑 8MB。** R33。
+
+## 测试
+
+1) **target SSD-only 微基准**：node2 4MB 读，P50/P90/P99/Pmax，至少 3 轮；
+   把模型里的 SSD 80 换成实测分布。
+2) **target NoF 两段**：SSD→target iobuf（盘读）、iobuf→initiator（push）分别打点；
+   方向是我们 Get 的拉取路径，不要照搬同事B 的 target push 数值。
+3) **c/d 1/1 客户端打点**：方案 A（1M、pin、sleep0）；c/d 各 3×60 s；
+   记录 query / NoF盘读 / push / copy / residual / total，P50/P90/P99/Pmax。
+4) **c vs d 同 SSD 对照**：同 target、同 key，分离 c 直写 last-hop 与 d host staging+copy；
+   验证 d 的 P50 gap 是 NoF/host 还是 copy。
+5) 全程 `--verify=false` + 读冒烟；不要用 `--verify=true`。
+
+## 判据
+
+- c：P50 已 421.89≈预期 422；确认 avg 的 46 µs 是否来自 target SSD/NoF 尾部；
+- d：确认 P50 的 64.4 µs 是 NoF 盘读/push 还是 host staging；copy 336 已到底；
+- 若 target 盘读/push 占主要部分 → c/d 客户端优化到此为止，后续动 NoF/SSD；
+- 若 host staging 占主要部分 → 客户端还有空间；
+- 任何 failed>0 停；不改交付表。
+
+## 产物
+
+- R33_20261031_cd_nof_split：meta、summary.csv、target 两段、client breakdown、
+  P50/P90/P99/Pmax、env、命令；
 - 不改交付表；脚本 diff 不用回传（只记 env/md5）。
