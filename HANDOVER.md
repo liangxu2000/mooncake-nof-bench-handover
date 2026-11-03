@@ -94,12 +94,13 @@
 | E3-AC | 2026-10-30 | 1M slice 的 16/16 CPU/吞吐：sleep 0/10/50（4MB/8MB b） | 已关闭 | 16/16 三档吞吐不变；sleep0 +9.71 核、sleep10 +1.82 核；保留默认 50，走方案 A |
 | E3-AD | 2026-10-31 | 方案 A 全场景复测：4MB a/b/c/d × 1/1/16/16（1M、1/1 sleep0、16/16 sleep50） | 已关闭 | 24 点零失败、零回退；a 1/1 +8.5%、b +35.5%、c +0.4%、d +11.5%；16/16 a/c 持平、b 10.97、d 11.39 |
 | E3-AE | 2026-10-31 | 方案 A 补齐并发：4MB a/b/c/d × 1/16 + 16/1（sleep 0/50） | 已关闭 | 1/16、16/1 全部饱和；sleep0 零收益、16/1 a +10.12 核；最终只有 1/1 用 sleep0 |
-| E3-AF | 2026-10-31 | 第三次测试：4MB 全表（干净）+ 1/1 打点拆解（独立诊断批） | 暂缓（先做 E3-AH） | c/d 根因优先；预览 xlsx 已由 E3-AG 生成 |
+| E3-AF | 2026-10-31 | 第三次测试：4MB 全表（干净）+ 1/1 打点拆解（独立诊断批） | 已由 E3-AL 取代 | 第四次测试口径的干净全表 + 拆解统一走 E3-AL；E3-AF 不再单独执行 |
 | E3-AG | 2026-10-31 | 用 R28/R29 已有数据生成 benchmark 格式预览 xlsx（不重跑） | 已关闭 | xlsx 11 728 B；4MB 16 格 176/176 单元格全有值；原表未改；8MB 按用户要求未整理 |
 | E3-AH | 2026-10-31 | node2 stripe 64K→512K A/B：c/d 16/16 + 1/1 回归（含 client chunk A/B） | 已关闭（回退 64K） | 512K c/d 16/16 +0.1%/+0.0%；c 1/1 −5.1%；chunk512K 100% 失败；已回退 |
 | E3-AI | 2026-10-31 | c/d 1/1 NoF 两段与尾部：target 盘读 vs push + 客户端对齐（不重建） | 已关闭 | c avg 470.7≈target 盘读 473，push 重叠，尾部 45 在 NoF/SSD；d copy 337 已到底，transport 215 + residual 97 是剩余空间 |
 | E3-AJ | 2026-10-31 | d 1/1 剩余 97 µs 拆解：scatter/alloc/free + transport/copy 流水可行性（不重建） | 已关闭 | **residual 97 不存在**（均值/中位混用）；d 690 = query39 + transfer297 + copy336 + 1；alloc/prep/free ≈0；copy 到底，transport/copy 严格串行，690 是当前下限 |
 | E3-AK | 2026-11-03 | d 1/1 异步 staging 流水原型：NoF range read + 2 块 2 MiB 双缓冲 + cudaMemcpyAsync | 已关闭（回退） | 重叠成立（copy0 2.2 µs、get1 217.9、sync 192.1）；P50 614→523（−14.9%），mean 685.5→680.8（−0.7%，噪声内）；拆分 2×2 MiB 使 transport 296.7→434.6（+46%），抵消 copy 节省 144；P90/P99/Pmax 变差（B r1 Pmax 5.35 ms > 5 ms）→ 按判据停止并回退；10/10 正确、failed=0；node2 未动 |
+| E3-AL | 2026-11-03 | 第四次测试：4MB 全量矩阵（16 格干净表）+ 每场景 1/1 打点拆解（四值表 + xlsx 副本） | 待执行 | — |
 
 ---
 
@@ -2313,3 +2314,66 @@ sleep=0 时 `sleep_us=0`。12 点严格交替。
 - 回退：4 文件 md5 恢复；bin 回 E3-AJ 基线（335 266 192 B）；复测 691.84/622.59；node2 零改动。
 - 代码：diff 14,494 B / 9 hunk / 4 文件；3 个库文件在 `d371e22+E3-N` 上 `apply --check` 通过；`real_client.cpp` 依赖 E3-AJ 基线，未本地复验；归档 `patches/E3-AK`（rejected，不入库）。
 - **结论**：d 690 是同步路径地板；"分块 + 同步 Get"零和；不采纳；剩余杠杆在 target 侧（同事 B）。
+
+---
+
+# E3-AL（待执行 · 2026-11-03）· 第四次测试：4MB 全量矩阵（16 格干净表）+ 每场景 1/1 打点拆解
+
+> 背景：第四次测试的归因已收口（c/d 客户端到底；E3-AK 已回退）。现在需要一套**完整的 4MB 干净矩阵**
+> 和**每场景 1/1 打点拆解**，用于第四次测试报告和最终交付。
+> 本任务承接 E3-AF（第三次测试版，未执行），按第四次测试口径执行；**E3-AF 不再单独执行**。
+> **不改代码、不改 target、不改 strip、不跑 8MB**；交付表只做新副本。
+
+## 一、干净正式表（16 格）
+
+- 4MB，a/b/c/d × 1/1、1/16、16/1、16/16，共 16 格。
+- Plan A：`MC_SLICE_SIZE=1048576`、`MC_UB_STAGING_POOL_PIN=1`；
+  **只有 1/1 加 `MC_STORE_UB_POLL_SLEEP_US=0`，其余三个并发点默认 50**；
+  `MC_NOF_SUBMIT_CHUNK_BYTES=131072`。
+- 采样：1/1 与 16/1 各 3 轮，1/16 与 16/16 各 2 轮（共 40 个样本，60 s/点）；
+  **同窗口、单实例**（E3-AD 的双实例事故不能再出现）。
+- **干净跑**：`MC_HIFREQ_LOG_SAMPLE_RATE`、`MC_UB_WORKER_DIAG`、`MC_BENCH_STAGING_TIMING`、
+  `MC_BENCH_STAGING_PATH_TIMING` 全部不设或为 0。
+- `--verify=false` + 读冒烟；任何格 failed>0 → 停，记录，不写交付。
+- **xlsx**：复制权威表为
+  `测试相关资料/第四次测试结果/benchmark_Mooncake_R36_20261103_第四次测试.xlsx`
+  （无目录则创建）；**只填 4MB 的 a/b/c/d × 4 并发共 16 格**
+  （min/avg/P50/P90/P99/P99.9/P99.99/Pmax/吞吐）；8MB sheet 保持原样；
+  原 `我们测试场景的测试结果benchmark.xlsx` 不动；openpyxl 回读校验 16 格全有值。
+
+## 二、独立打点批（只做 1/1）
+
+- 4MB，a/b/c/d × 1/1，batch=1；配置同正式表（1M、pin、sleep=0）；3×60 s，每场景 1 点，共 4 点。
+- 打点：`MC_HIFREQ_LOG_SAMPLE_RATE=1`、`MC_UB_WORKER_DIAG=1`、
+  `MC_BENCH_STAGING_TIMING=1`、`MC_BENCH_STAGING_PATH_TIMING=1`。
+- **先做 10 s A/B**（每场景：干净 vs 打点），total 偏移 >3% → 把 sample 降到 0.1/0.5 并注明；
+  `MC_HIFREQ_LOG_SAMPLE_RATE` 是 per-request 打点，batch>1 不走，故只做 1/1。
+- **拆解输出（每场景）**：
+  - query / 数据面分段 / copy / residual / total；
+  - a：direct 段；b：UB + copy；c：NoF 融合段；d：transfer + copy；
+  - **四值表：理论 / 预期 / 实测（优化前，第二次 R08）/ 实测（优化后，本轮 R36）**；
+  - 分段用 1/1 打点中位；总时延用干净表 avg；两者不可严格相加，报告中注明。
+- 输出 `测试相关资料/第四次测试结果/4MB-第四次测试结果时延拆解.md`，
+  参照 `测试相关资料/第二次测试结果&分析/4MB-第二次测试结果时延拆解.md` 的结构；
+  保留 R36D 的 CSV/日志。
+
+## 三、判据
+
+- 16 格干净表 failed=0；16 格 xlsx 全有值；原表 md5 不变。
+- 打点批与干净 1/1 的 total 偏移 <3%；超过则降采样并注明。
+- 四值表与干净表/打点批同口径；数字标 avg/median、实测/拆分/批次；
+  c 的 379 是融合段、d 的 225/297 是合并段，不能写成 SSD-only。
+- 任何 failed>0 / 异常（verify、掉链、STUCK）→ 停，不写交付。
+
+## 四、产物
+
+- `R36_20261103_4mb_full/`：meta、summary.csv、16 格原始日志、env、命令、脚本 md5、CPU/load；
+- `R36D_20261103_4mb_breakdown/`：1/1 打点 4 点、breakdown CSV、四值 md、A/B 开销记录、日志；
+- xlsx 副本 + 回读校验结果；
+- **不改代码 → 无源码 diff 回传**；脚本按约定只记 md5，不回传。
+
+## 五、备注
+
+- 本轮不改任何 C++、不动 node2 target、不改 strip（保持 64K）、不改交付表。
+- 诊断批与干净表分开跑、分开存；诊断数不写入正式表。
+- 若干净矩阵某格与历史 R28/R29/R33 偏差 >3%，先记录并回报，不直接覆盖。
