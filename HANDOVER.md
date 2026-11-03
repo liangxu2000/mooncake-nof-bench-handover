@@ -97,7 +97,8 @@
 | E3-AF | 2026-10-31 | 第三次测试：4MB 全表（干净）+ 1/1 打点拆解（独立诊断批） | 暂缓（先做 E3-AH） | c/d 根因优先；预览 xlsx 已由 E3-AG 生成 |
 | E3-AG | 2026-10-31 | 用 R28/R29 已有数据生成 benchmark 格式预览 xlsx（不重跑） | 已关闭 | xlsx 11 728 B；4MB 16 格 176/176 单元格全有值；原表未改；8MB 按用户要求未整理 |
 | E3-AH | 2026-10-31 | node2 stripe 64K→512K A/B：c/d 16/16 + 1/1 回归（含 client chunk A/B） | 已关闭（回退 64K） | 512K c/d 16/16 +0.1%/+0.0%；c 1/1 −5.1%；chunk512K 100% 失败；已回退 |
-| E3-AI | 2026-10-31 | c/d 1/1 NoF 两段与尾部：target 盘读 vs push + 客户端对齐（不重建） | 待执行 | — |
+| E3-AI | 2026-10-31 | c/d 1/1 NoF 两段与尾部：target 盘读 vs push + 客户端对齐（不重建） | 已关闭 | c avg 470.7≈target 盘读 473，push 重叠，尾部 45 在 NoF/SSD；d copy 337 已到底，transport 215 + residual 97 是剩余空间 |
+| E3-AJ | 2026-10-31 | d 1/1 剩余 97 µs 拆解：scatter/alloc/free + transport/copy 流水可行性（不重建） | 待执行 | — |
 
 ---
 
@@ -2057,7 +2058,11 @@ sleep=0 时 `sleep_us=0`。12 点严格交替。
 
 ---
 
-# E3-AI（待执行）· c/d 1/1 NoF 两段与尾部（不重建）
+# E3-AI（已关闭 · 2026-10-31）· c/d 1/1 NoF 两段与尾部（不重建）
+
+> 已收，回执见下方。**c 客户端已到底：avg 470.7 ≈ target 盘读 473，push 与盘读重叠，
+> 45 µs 差是 NoF/SSD 尾部；d 还有客户端空间：copy 337 已到底，transport 215 + residual 97
+> 是剩余，下一步 E3-AJ 拆 residual/流水。**
 
 > 目标：c/d 16/16 已到 GPU 侧上限；剩下的问题只在 1/1：
 > c avg 467.93 与 P50 421.89 的 46 µs 差（尾部）；d P50 622.59 与预期 558.2 的 64.4 + 尾部。
@@ -2089,3 +2094,60 @@ sleep=0 时 `sleep_us=0`。12 点严格交替。
 - R33_20261031_cd_nof_split：meta、summary.csv、target 两段、client breakdown、
   P50/P90/P99/Pmax、env、命令；
 - 不改交付表；脚本 diff 不用回传（只记 env/md5）。
+
+## 回执（2026-10-31，已收）
+
+**结果（4MB c/d 1/1，3×60 s，failed=0）**
+
+| case | GiB/s | avg µs | P50 | P90 | P99 | Pmax |
+| --- | --- | --- | --- | --- | --- | --- |
+| c | 8.30 | 470.73 | 425.98 | 540.67 | 614.40 | 2864.44 |
+| d | 5.66 | 689.80 | 614.40 | 860.16 | 958.46 | 2882.24 |
+
+- client：c query39/read378；d query41/transport215/copy337/residual97；恒等式闭合。
+- target 盘读：c 8.26 GiB/s、d 5.66 GiB/s；盘侧字节率 = 客户端吞吐，端到端无隐藏瓶颈；
+  每请求 64 个 64K child（512K 提交块 ÷ 64K strip）。
+- **c**：avg 470.7 ≈ target 盘读 473；push 与盘读重叠，不能相加；
+  avg−P50 = 45 µs（P99 614/Pmax 2864），尾部在 NoF/SSD，**客户端没有可用空间，收工**。
+- **d**：copy 336–337（P50 337/P99 338）已是常量级、pinned 下限；transport 215
+  比 c 的 368 少 153（target 写 host 比写 GPU 快约 40%）。
+  d 的 avg 690 = query41 + transport215 + copy337 + residual97；
+  **剩余空间在 residual 97 和 transport 215，不在 copy**。
+- 口径：同事B 的 W9 116.98 + push 21.27 是 target push 串行；我们 Get 盘读/push 重叠，
+  盘率=端到端率，不能相加。
+- `--verify=true` 仍不可用，本轮全用读冒烟；node2 strip 64K、无重建。
+- C++/脚本零改动；R33。
+
+---
+
+# E3-AJ（待执行）· d 1/1 剩余 97 µs 拆解与 transport/copy 流水可行性
+
+> 目标：d 的 copy 337 已到 pinned 下限；avg 690 里还剩 query41 + transport215 + residual97。
+> 本轮先把 **residual 97** 拆开（allocator / scatter_host_to_maybe_device / free / 记账），
+> 再评估 transport 与 copy 能否分块流水/重叠。**只做 d 1/1；不重建、不全矩阵、不跑 8MB。**
+> 若需要代码改动，先出最小 patch 和 A/B，按规则回传 diff；R34。
+
+## 测试
+
+1) **residual 拆解（先测，不改语义）**：
+   - 在 `real_client` 的 d 路径记录：buffer allocate、scatter_host_to_maybe_device、
+     buffer free、其余记账；batch=1、d 1/1、Plan A（1M、pin、sleep0）。
+   - 3×60 s；目标：把 97 µs 拆成具体项，至少覆盖≥80%。
+2) **transport/copy 串行验证**：
+   - 用现有打点确认 transport 215 与 copy 337 是否严格串行（当前恒等式已显示串行）；
+   - 记录 copy 分块数、每块时间，判断是否有流水空间。
+3) **可选最小 patch A/B（只有 residual 明确后才做）**：
+   - 候选：buffer 复用/减少 alloc-free；或 `cudaMemcpyAsync` 分块 + 与 transport 重叠；
+   - env 门控、默认关闭；A/B 同窗口 3×60 s；不做全矩阵。
+4) 全程 `--verify=false` + 读冒烟。
+
+## 判据
+
+- residual 97 中 ≥50 µs 能归到 allocator/scatter/free → 先做对应最小 patch；
+- 若 transport 与 copy 可重叠，d 1/1 有望向 ~500–600 µs 走；若不能，d 的 690 就是当前路径下限；
+- 任何 failed>0 停；不改交付表；不跑 8MB。
+
+## 产物
+
+- R34_20261031_d_residual：meta、summary.csv、residual 分解、copy 分块、A/B（如有）、env、命令；
+- 若改代码：最小 diff + base64 + sha256，按长期规则回传；不改交付表。
