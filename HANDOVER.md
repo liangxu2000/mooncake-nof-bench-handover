@@ -98,7 +98,7 @@
 | E3-AG | 2026-10-31 | 用 R28/R29 已有数据生成 benchmark 格式预览 xlsx（不重跑） | 已关闭 | xlsx 11 728 B；4MB 16 格 176/176 单元格全有值；原表未改；8MB 按用户要求未整理 |
 | E3-AH | 2026-10-31 | node2 stripe 64K→512K A/B：c/d 16/16 + 1/1 回归（含 client chunk A/B） | 已关闭（回退 64K） | 512K c/d 16/16 +0.1%/+0.0%；c 1/1 −5.1%；chunk512K 100% 失败；已回退 |
 | E3-AI | 2026-10-31 | c/d 1/1 NoF 两段与尾部：target 盘读 vs push + 客户端对齐（不重建） | 已关闭 | c avg 470.7≈target 盘读 473，push 重叠，尾部 45 在 NoF/SSD；d copy 337 已到底，transport 215 + residual 97 是剩余空间 |
-| E3-AJ | 2026-10-31 | d 1/1 剩余 97 µs 拆解：scatter/alloc/free + transport/copy 流水可行性（不重建） | 待执行 | — |
+| E3-AJ | 2026-10-31 | d 1/1 剩余 97 µs 拆解：scatter/alloc/free + transport/copy 流水可行性（不重建） | 已关闭 | **residual 97 不存在**（均值/中位混用）；d 690 = query39 + transfer297 + copy336 + 1；alloc/prep/free ≈0；copy 到底，transport/copy 严格串行，690 是当前下限 |
 
 ---
 
@@ -2120,7 +2120,11 @@ sleep=0 时 `sleep_us=0`。12 点严格交替。
 
 ---
 
-# E3-AJ（待执行）· d 1/1 剩余 97 µs 拆解与 transport/copy 流水可行性
+# E3-AJ（已关闭 · 2026-10-31）· d 1/1 剩余 97 µs 拆解与 transport/copy 流水可行性
+
+> 已收，回执见下方。**前提被推翻：residual 97 不存在，是端到端均值减分段中位的混合口径；
+> d 同口径闭合到 1 µs：690 = query39 + transfer297 + copy336 + 1。alloc/prep/free≈0，
+> copy 已到 336 下限；transport/copy 严格串行，690 是当前路径下限。**
 
 > 目标：d 的 copy 337 已到 pinned 下限；avg 690 里还剩 query41 + transport215 + residual97。
 > 本轮先把 **residual 97** 拆开（allocator / scatter_host_to_maybe_device / free / 记账），
@@ -2151,3 +2155,56 @@ sleep=0 时 `sleep_us=0`。12 点严格交替。
 
 - R34_20261031_d_residual：meta、summary.csv、residual 分解、copy 分块、A/B（如有）、env、命令；
 - 若改代码：最小 diff + base64 + sha256，按长期规则回传；不改交付表。
+
+## 回执（2026-10-31，已收）
+
+**前提修正：residual 97 不存在**
+
+- 97 是“端到端均值 690”减“分段中位 41/215/337”的混合口径产物，不是真实 residual。
+- 同口径重算（B 臂）：
+  `bench avg 688.19 = wrapper +5.0 + get_into 683.2`
+  `get_into 683.2 = query 39.2 + read 642.7 + 1.3`
+  `read 642.7 = transfer 296.8 (submit 4.3 + wait 292.5) + copy 336.3 + 9.6`
+  `alloc 0.0 + prep 0.0 + free 0.0`；自洽残差 ~1.0 µs。
+- **d 690 = query39 + transfer297 + copy336 + ~1 + wrapper5**；没有 alloc/scatter/free 空间。
+- **口径对账**：R33/E3-AI 的 `transport 215` 是 **P50**；E3-AJ 的 `292.5` 是 **mean**；
+  `97` 正好是 mean−P50 的尾部，不是独立段。A_r3/B_r3 的 P50 614.40 逐位复现，
+  所以不是换路径，是均值/中位混用。**d 的 mean 690 / P50 614 都对，尾部在 transfer wait。**
+- 均值高出中位的 +79 µs **100% 在 NoF transport wait**；copy 只贡献 +0.3 µs。
+
+**结果（A/B/C 各 3×60 s，failed=0）**
+
+| 臂 | r3 GiB/s / avg | 说明 |
+| --- | --- | --- |
+| A 基线 | 5.66 / 689.93 | 复现 R33 |
+| B 打点 | 5.68 / 688.19 | 结构拆解 |
+| C 打点+5% 采样 | 5.82 / 671.57 | 采样偏差，仅参考 |
+
+- A_r3/B_r3 逐位复现 R33（5.66 / P50 614.40）。
+- staging_path_breakdown：alloc 0（max 0–1）、prep 0（max 0–11）、free 0（max 0–6）、
+  get 291–310、scatter 339–340；覆盖 100%。
+- copy 336.1–336.7、P99 338、max 380–384；4 MiB/336.3 = 12.47 GB/s，
+  与 E3-U pinned 334.8 一致 → PCIe 同步拷贝硬下限。
+
+**流水可行性（代码级）**
+
+- `client_->Get()` 返回后才调 `scatter_host_to_maybe_device` → 严格串行；
+- `CopyFromHost` → `cudaMemcpy`（同步）；`scatter_copy_breakdown` 每请求 1 条、
+  size 恒 4 MiB，分块数=1；全仓无 `GetAsync/async_get/GetIntoAsync`。
+- 分块+双缓冲+`cudaMemcpyAsync` 需要新增异步读路径，**不是最小 patch**；
+  理论 P50 ≈ 39 + max(217,336) + 10 ≈ 385 µs，未做原型。
+
+**结论**
+
+- **d 1/1 690 是当前“同步 transport + 同步 copy”路径的下限**；
+  copy 已到 336 地板，transport 292.5 是主要项。
+- 想再降 d 只有两条路：**新增异步 staging 流水**（大改，需代码）或**降 target NoF transport**
+  （target 侧）；不是 alloc/scatter/free patch。
+- c 已收工；d 简单客户端优化也收工。
+
+**代码/环境**
+
+- 打点版 `real_client.cpp`，env `MC_BENCH_STAGING_PATH_TIMING` 默认关；
+  `real_client.cpp.diff` 5500 B，sha256 `70f4926c…`；已归档 `patches/E3-AJ/`。
+- mc_bench_point.sh md5 `b2a43fb4…`→`ac73d1a1…`（2 行 env 透传，不设不生效）。
+- `--verify=true` 仍不可用；全程 `--verify=false`；node2 strip 64K 未动；R34。
