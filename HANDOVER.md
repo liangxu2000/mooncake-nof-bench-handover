@@ -1,6 +1,6 @@
 # 交接文件（单向：开发指挥 Agent → 测试执行 Agent）
 
-- 最后更新：2026-10-30
+- 最后更新：2026-11-03
 - 仓库：`https://github.com/liangxu2000/mooncake-nof-bench-handover`（public，可匿名拉取，无需凭据）
 - 首次：`git clone https://github.com/liangxu2000/mooncake-nof-bench-handover.git`
 - 之后每轮：`cd mooncake-nof-bench-handover && git pull`
@@ -99,6 +99,7 @@
 | E3-AH | 2026-10-31 | node2 stripe 64K→512K A/B：c/d 16/16 + 1/1 回归（含 client chunk A/B） | 已关闭（回退 64K） | 512K c/d 16/16 +0.1%/+0.0%；c 1/1 −5.1%；chunk512K 100% 失败；已回退 |
 | E3-AI | 2026-10-31 | c/d 1/1 NoF 两段与尾部：target 盘读 vs push + 客户端对齐（不重建） | 已关闭 | c avg 470.7≈target 盘读 473，push 重叠，尾部 45 在 NoF/SSD；d copy 337 已到底，transport 215 + residual 97 是剩余空间 |
 | E3-AJ | 2026-10-31 | d 1/1 剩余 97 µs 拆解：scatter/alloc/free + transport/copy 流水可行性（不重建） | 已关闭 | **residual 97 不存在**（均值/中位混用）；d 690 = query39 + transfer297 + copy336 + 1；alloc/prep/free ≈0；copy 到底，transport/copy 严格串行，690 是当前下限 |
+| E3-AK | 2026-11-03 | d 1/1 异步 staging 流水原型：NoF range read + 2 块 2 MiB 双缓冲 + cudaMemcpyAsync | 待执行 | — |
 
 ---
 
@@ -2208,3 +2209,89 @@ sleep=0 时 `sleep_us=0`。12 点严格交替。
   `real_client.cpp.diff` 5500 B，sha256 `70f4926c…`；已归档 `patches/E3-AJ/`。
 - mc_bench_point.sh md5 `b2a43fb4…`→`ac73d1a1…`（2 行 env 透传，不设不生效）。
 - `--verify=true` 仍不可用；全程 `--verify=false`；node2 strip 64K 未动；R34。
+
+---
+
+# E3-AK（待执行 · 2026-11-03）· d 1/1 异步 staging 流水原型（NoF range read + 2 块双缓冲）
+
+> 背景：E3-AJ 已确认 d 1/1 的 690 µs = query 39 + transfer 297（mean；P50 215）+ copy 336 + ~1 + wrapper 5，
+> transport 与 copy 严格串行；copy 已到 PCIe pinned 地板，简单客户端优化收工。
+> 本轮只验证一条客户端杠杆：**把 NoF transport 等待与 H2D copy 重叠**。
+> **只做 d 1/1；不碰 a/b/c，不跑 16/16、8MB，不改交付表。**
+
+## 目标
+
+- d 1/1 mean 690 → 530–560 µs，P50 614 → ~490–530。
+- 手段：2 块 2 MiB 双缓冲；单线程串行 `Get(chunk0)` → `cudaMemcpyAsync(chunk0)` →
+  `Get(chunk1)`（与 copy0 重叠）→ `cudaMemcpyAsync(chunk1)` → `cudaStreamSynchronize`。
+- 性质：bench 原型，env 门控默认关，失败回退串行。
+
+## 前提（先做，破坏性为零）
+
+1. 记录 HEAD；把以下 4 个文件在打补丁前归档并记 md5：
+   `mooncake-store/src/real_client.cpp`、`mooncake-store/src/client_service.cpp`、
+   `mooncake-store/src/transfer_task.cpp`、`mooncake-store/include/transfer_task.h`。
+2. 确认 d 场景 `MC_UB_GPU_MODE=staging`、`MC_UB_STAGING_POOL_PIN=1`、
+   `MC_SLICE_SIZE=1048576`、`MC_NOF_SUBMIT_CHUNK_BYTES=131072`；全程 `--verify=false`。
+3. 同窗口先跑 A0 基线（打点开），确认 d 1/1 复现 690 量级。
+
+## 代码改动（4 文件；尽量最小）
+
+1) `client_service.cpp` `Client::Get(..., src_offset)`：
+   - 允许 NoF replica 走 range read（memory 行为不变，disk 仍拒绝）。
+
+2) `transfer_task.cpp` `TransferSubmitter::submitRangeRead`：
+   - 增加 NoF 分支：从 slices 求连续区间（首 ptr + 总 size），检查
+     `src_offset + size <= handle.size_`，调
+     `submitSpdkNofOperation(handle, base, size, READ, src_offset)`。
+
+3) `transfer_task.h/.cpp` `submitSpdkNofOperation`：
+   - 增加 `uint64_t src_offset = 0`；
+   - 校验 `src_offset + size <= handle.size_`、
+     `(handle.buffer_address_ + src_offset) % block_size == 0`；
+   - `SpdkNofTask` 起始 LBA 改为 `(buffer_address_ + src_offset)/block_size`，长度不变；
+   - 现有调用不传 offset，默认 0，行为不变。
+
+4) `real_client.cpp` d 的 GPU staging 全读分支：
+   - 新 env `MC_BENCH_ASYNC_STAGING`（默认 0）；=1 时走 2 块流水，否则原串行；
+   - 条件：NoF + dst 为设备指针 + checksum 关 + `total_size % 128KiB == 0` + 指针对齐 + pin=1；
+   - 缓冲只分配一次（沿用现有 `client_buffer_allocator_->allocate(total_size)`），切成两半；
+   - 每半用 `std::vector<Slice>{{ptr, half}}` 调
+     `client_->Get(key, filtered_qr, chunk_slice, src_offset)`；
+   - `thread_local` 静态 non-blocking stream；两次 `cudaMemcpyAsync`；最后 `cudaStreamSynchronize`；
+   - 打点（沿用 `MC_BENCH_STAGING_PATH_TIMING`）：
+     `async_get0 / async_copy0 / async_get1 / async_copy1 / async_sync / async_total`；
+   - 不满足条件或任何失败 → 回退串行；错误先 sync 再返回。
+
+## 正确性门（先于性能）
+
+- 新 env `MC_BENCH_ASYNC_STAGING_VERIFY=1`：前 10 个请求，异步结果与同 key 串行全读结果
+  D2H 后 `memcmp`；10/10 通过才跑性能。
+- 任何不一致 → 停，不测性能。
+
+## 测试（R35）
+
+- d 1/1，batch=1，Plan A（1M、pin=1、sleep0），`--verify=false`，每臂 3×60 s。
+- 臂：**A0 基线（`MC_BENCH_ASYNC_STAGING=0`+打点）→ B 原型（=1+打点）→ A1 回基线**；同窗口。
+- 记录：mean/P50/P90/P99/Pmax、GiB/s、failed、CPU；分段 async_*；A0/A1 漂移。
+- 判据：
+  - 前提：正确性 10/10、failed=0、A0/A1 漂移 <3%；
+  - B mean ≤ 600 且 P50 ≤ 540 → 保留，进入下一轮评估；
+  - B mean 600–656 → 边缘，记录，等用户决定；
+  - B mean ≥ 656（<5% 收益）→ 停止、回退，不扩大。
+- 任何 failed>0 / memcmp 不一致 / CUDA/Get 错误 → 停。
+
+## 回退
+
+- 运行时：`unset MC_BENCH_ASYNC_STAGING` → 原串行（同一二进制可做 A 臂）。
+- 构建时：`git apply -R` 或 `git checkout -- <4 文件>`。
+- 完整基线：用前提 1 的 tar 包恢复并 `md5sum -c`；R35 meta 记录归档路径、md5、HEAD。
+- 源码 diff 按长期规则回传（最小 `git diff -U1` + base64 单行 + sha256 + stat + HEAD + 编译命令）；
+  脚本不回传。
+
+## 产物
+
+- `R35_20261103_d_async_staging/`：meta、summary.csv、async_breakdown.csv、A0/B/A1 日志、
+  env、命令、脚本 md5、正确性 memcmp 结果、回退验证；
+- 源码最小 diff（4 文件）；
+- 回执：纯文本，结果表 + 分段表 + 判据结论 + 回退验证 + diff。
