@@ -99,7 +99,7 @@
 | E3-AH | 2026-10-31 | node2 stripe 64K→512K A/B：c/d 16/16 + 1/1 回归（含 client chunk A/B） | 已关闭（回退 64K） | 512K c/d 16/16 +0.1%/+0.0%；c 1/1 −5.1%；chunk512K 100% 失败；已回退 |
 | E3-AI | 2026-10-31 | c/d 1/1 NoF 两段与尾部：target 盘读 vs push + 客户端对齐（不重建） | 已关闭 | c avg 470.7≈target 盘读 473，push 重叠，尾部 45 在 NoF/SSD；d copy 337 已到底，transport 215 + residual 97 是剩余空间 |
 | E3-AJ | 2026-10-31 | d 1/1 剩余 97 µs 拆解：scatter/alloc/free + transport/copy 流水可行性（不重建） | 已关闭 | **residual 97 不存在**（均值/中位混用）；d 690 = query39 + transfer297 + copy336 + 1；alloc/prep/free ≈0；copy 到底，transport/copy 严格串行，690 是当前下限 |
-| E3-AK | 2026-11-03 | d 1/1 异步 staging 流水原型：NoF range read + 2 块 2 MiB 双缓冲 + cudaMemcpyAsync | 待执行 | — |
+| E3-AK | 2026-11-03 | d 1/1 异步 staging 流水原型：NoF range read + 2 块 2 MiB 双缓冲 + cudaMemcpyAsync | 已关闭（回退） | 重叠成立（copy0 2.2 µs、get1 217.9、sync 192.1）；P50 614→523（−14.9%），mean 685.5→680.8（−0.7%，噪声内）；拆分 2×2 MiB 使 transport 296.7→434.6（+46%），抵消 copy 节省 144；P90/P99/Pmax 变差（B r1 Pmax 5.35 ms > 5 ms）→ 按判据停止并回退；10/10 正确、failed=0；node2 未动 |
 
 ---
 
@@ -2212,7 +2212,7 @@ sleep=0 时 `sleep_us=0`。12 点严格交替。
 
 ---
 
-# E3-AK（待执行 · 2026-11-03）· d 1/1 异步 staging 流水原型（NoF range read + 2 块双缓冲）
+# E3-AK（已关闭 · 2026-11-03，已回退）· d 1/1 异步 staging 流水原型（NoF range read + 2 块双缓冲）
 
 > 背景：E3-AJ 已确认 d 1/1 的 690 µs = query 39 + transfer 297（mean；P50 215）+ copy 336 + ~1 + wrapper 5，
 > transport 与 copy 严格串行；copy 已到 PCIe pinned 地板，简单客户端优化收工。
@@ -2295,3 +2295,21 @@ sleep=0 时 `sleep_us=0`。12 点严格交替。
   env、命令、脚本 md5、正确性 memcmp 结果、回退验证；
 - 源码最小 diff（4 文件）；
 - 回执：纯文本，结果表 + 分段表 + 判据结论 + 回退验证 + diff。
+
+## 回执（2026-11-03，已收）
+
+**结果（9 点 + 2 CPU 补测，failed=0；R35）**
+
+| 臂 | mean µs | P50 | P90 | P99 | Pmax | GiB/s |
+| --- | --- | --- | --- | --- | --- | --- |
+| A0 串行 | 685.48 | 614.40 | 851.97–860.16 | 950.27–958.46 | 2631.99–3953.93 | 5.698 |
+| B 流水 | 680.82 | **522.92** | 909.31–917.50 | 1032.19–1040.38 | **2734.44–5348.00** | 5.737 |
+| A1 回基线 | 687.95 | 617.13 | 851.97–860.16 | 950.27–958.46 | 2753.64–3812.92 | 5.677 |
+
+- 正确性 10/10 memcmp；failed=0、cuda_err=0；A0→A1 漂移 +0.4%/−0.4%。
+- 分段：串行 transport 296.7 + copy 336.1；流水 get0 216.7 + get1 217.9 + sync 192.1 = 626.7 ≈ total 630.3。
+- 机理：拆分 2×2 MiB 使 transport +137.9（+46%，固定开销 ~69 µs/次），重叠只省 copy 144 → 净 −2.5 µs；P50 改善、尾部变差（B r1 Pmax 5.35 ms > 5 ms）。
+- 判据：B mean 680.8 ≥ 656 → 命中停止/回退（P50 522.9 通过，但 mean/尾部不通过）。
+- 回退：4 文件 md5 恢复；bin 回 E3-AJ 基线（335 266 192 B）；复测 691.84/622.59；node2 零改动。
+- 代码：diff 14,494 B / 9 hunk / 4 文件；3 个库文件在 `d371e22+E3-N` 上 `apply --check` 通过；`real_client.cpp` 依赖 E3-AJ 基线，未本地复验；归档 `patches/E3-AK`（rejected，不入库）。
+- **结论**：d 690 是同步路径地板；"分块 + 同步 Get"零和；不采纳；剩余杠杆在 target 侧（同事 B）。
