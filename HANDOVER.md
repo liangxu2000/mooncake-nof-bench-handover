@@ -101,6 +101,7 @@
 | E3-AJ | 2026-10-31 | d 1/1 剩余 97 µs 拆解：scatter/alloc/free + transport/copy 流水可行性（不重建） | 已关闭 | **residual 97 不存在**（均值/中位混用）；d 690 = query39 + transfer297 + copy336 + 1；alloc/prep/free ≈0；copy 到底，transport/copy 严格串行，690 是当前下限 |
 | E3-AK | 2026-11-03 | d 1/1 异步 staging 流水原型：NoF range read + 2 块 2 MiB 双缓冲 + cudaMemcpyAsync | 已关闭（回退） | 重叠成立（copy0 2.2 µs、get1 217.9、sync 192.1）；P50 614→523（−14.9%），mean 685.5→680.8（−0.7%，噪声内）；拆分 2×2 MiB 使 transport 296.7→434.6（+46%），抵消 copy 节省 144；P90/P99/Pmax 变差（B r1 Pmax 5.35 ms > 5 ms）→ 按判据停止并回退；10/10 正确、failed=0；node2 未动 |
 | E3-AL | 2026-11-03 | 第四次测试：4MB 全量矩阵（16 格干净表）+ 每场景 1/1 打点拆解（四值表 + xlsx 副本） | 已关闭 | 16 格 40 样本 failed=0；1/1 a 368.46 / b 481.02 / c 467.29 / d 682.63；四值 −7.9%/−26.7%/−0.5%/−11.7%；16/16 a 12.69 / b 11.35 / c 12.68 / d 11.42；b 16/16 +3.5%（更优）；P9999 两格不可用；xlsx 176/176；原表未变 |
+| E3-AM | 2026-11-04 | 第五次测试：d 合并段 60 µs 归因（SPDK e12b7cb + stage buffer 两段打点 + 旧/新 A/B） | 待执行 | — |
 
 ---
 
@@ -2395,3 +2396,99 @@ sleep=0 时 `sleep_us=0`。12 点严格交替。
 - xlsx 176/176（md5 41bc0c58…）；原表 md5 1b59a61a… 未变；R36/R36D 产物齐全；node4/node2 零改动。
 - 异常：b 16/16 11.35 vs R28 10.97（+3.5%，更优，保留历史不回改）；P9999 两格因查询数 <10000 不可用；node4 load 15→28（他人负载），逐轮 spread ≤1.3%；c 分段 417.2 与早前 378/379 非同批口径，总量一致。
 - **结论**：第三次测试交付值在第四次复现、无回退；R36 可作为第四次测试最终干净表；第四次测试仍无新增优化。
+
+---
+
+# E3-AM（待执行 · 2026-11-04）· 第五次测试：d 合并段 60 µs 归因（SPDK 升级 + stage buffer）
+
+> 背景：R36 d 1/1 avg 682.63；transfer 合并段 mean 296.4（P50 ~226），模型 80（SSD）+86.4（UB）=166.4，
+> 差约 60；copy 336.7 已是 pinned 地板，query/residual 无空间。**60 µs 在 target 侧，客户端无杠杆。**
+> 目标：升级 SPDK 到最新 `urma_enable_v2`，用其**内置 stage buffer** 把 d 的 transfer 合并段拆成
+> “SSD→target DRAM”和“target DRAM→node4 DRAM”两段，定案 60 µs；同时做旧/新 SPDK A/B。
+> **只做 d 1/1；不跑全量/8MB；不改 stripe；不改交付表。**
+
+## 一、升级与归档
+
+1. 归档旧 SPDK build、旧 `dependencies.sh`、旧 target 二进制；记录 md5/路径。
+2. 把 Mooncake `dependencies.sh` 的 `SPDK_URMA_REF_DEFAULT` 从
+   `4f8a8466d495df8bb9eb42d62e6b3282174b5e1e` 改为
+   `e12b7cb213a9c1a2a22b99ab4732c8c11f95032c`（1 行；wire 仍 v4）。
+3. 重建 client + target；10 s d 1/1 冒烟 failed=0；确认两端同版本。
+4. 回退：恢复 `dependencies.sh`、切回旧 build；或 `git checkout`；归档 tar+md5 必须留。
+
+## 二、旧/新 A/B（干净跑，关 stage buffer）
+
+- d 1/1，batch=1，Plan A（1M、pin、sleep0），`--verify=false`，3×60 s。
+- 顺序：旧 build A0 → 新 build B → 旧 build A1（时间允许）；A0/A1 漂移 <3%。
+- 记录 avg/P50/P90/P99/Pmax、GiB/s、failed、transfer submit/wait、copy。
+- 判据：B 与 A0 差 <3% → 5 个 commit 不影响性能；>3% 记录方向，决定是否保留新 pin。
+
+## 三、Stage buffer 两段打点（新 build）
+
+**Env（reader/client）**
+```
+SPDK_URMA_STAGE_TRACE_US=1
+SPDK_URMA_STAGE_READER_SINK=buffer
+SPDK_URMA_STAGE_READER_PATH=/tmp/urma_reader_<tag>.bin   # 每轮唯一；O_EXCL
+SPDK_URMA_STAGE_READER_CAPACITY=500000
+```
+**Env（target）**
+```
+SPDK_URMA_STAGE_TRACE_US=1
+SPDK_URMA_STAGE_TARGET_SINK=buffer
+SPDK_URMA_STAGE_TARGET_PATH=/tmp/urma_target_<tag>.bin   # 每次 target 启动唯一
+SPDK_URMA_STAGE_TARGET_CAPACITY=500000
+```
+注意：
+- `SPDK_URMA_STAGE_TRACE_US=1` 是必须的（否则 `trace_seq=0`，不产生记录）。
+- `SINK=buffer` + `PATH`；文件 O_EXCL，重复路径会 abort；每轮换名或先删。
+- 进程必须**正常退出**才会 dump；校验文件头 `URMA3B01`、文件尾 `URMA3END`。
+- 记录 192 B（24×u64），文件头 72 B，文件尾 24 B。
+
+**字段映射（reader，side=1）**
+`v0 seq, v1 qid, v2 cid, v3 opc, v4 lba, v5 blocks, v6 hz, v7 submit, v8 send_start,
+v9 t_rel0, v10 t_rel1, v11 t_total1, v12 completion_ns, v13 flags, v14 target_lcore,
+v15 target_hz, v16 rx, v17 buffer, v18 exec, v19 bdev_cpl, v20 data_post, v21 data_cpl,
+v22 stage_seq, v23 0`
+
+**字段映射（target，side=2）**
+`v0 seq, v1 qid, v2 cid, v3 lba, v4 blocks, v5 hz, v6 exec, v7 read_enter, v8 read_submit,
+v9 submit_return, v10 callback, v11 wait_ticks, v12 enomem, v13 rx, v14 buffer,
+v15 bdev_cpl, v16 data_post, v17 data_cpl, v18 t_rel0, v19 target_lcore, v20 flags`
+
+**每请求计算**
+- SSD 段 = `bdev_cpl − exec`
+- bdev 排队 = `(read_submit − read_enter) + (callback − submit_return)`
+- data post = `data_post − bdev_cpl`
+- data 完成 = `data_cpl − data_post`
+- 网络往返 = reader `t_total1` / `completion − submit` 与 target `rx/data_cpl` 对齐
+- 输出各段 P50/P90/P99/Pmax，与模型 80 / 86.4 和客户端 transfer 226 对比。
+
+## 四、交叉验证（可选）
+
+- node2 用 `urma_perf`，4MB 读，`URMA_PERF_PARENT_TRACE=1`，同 SSD/URMA；
+  解析 `URMA_PARENT_IO` 的 submit/complete tick，得 SSD 读分布，与 stage buffer 对照。
+- 如方便，再跑 target→initiator push 的微基准；不做也可以，stage buffer 已覆盖。
+
+## 五、判据
+
+- A/B：新 build 与旧 build 差 <3% → SPDK 5 commit 不影响；>3% 记录方向。
+- Stage：若 SSD ≈80–120、data post/完成 ≈86–100，二者之和能解释 226 → 60 是两段本身（模型偏低）；
+  若 SSD ≈80 但 data post/完成 ≈140 → gap 在 URMA/NoF 栈；
+  若两段有重叠、和 > 实测 → 串行模型不成立，按实测重算预期。
+- 必须能把 226 拆到两段并闭合（残差 ≤10 µs）；拆不开就回报，不硬凑。
+- 任何 failed>0 / stage 文件为空 / 缺头尾 → 停，不写结论。
+
+## 六、产物
+
+- `R37_20261104_d_gap_ab/`：meta、summary、A0/B/A1 日志、env、命令、md5。
+- `R37D_20261104_d_stage/`：reader/target `.bin`、解析 CSV、分段 P50/P90/P99/Pmax、parser 脚本 md5、
+  stage buffer 开销对照（开/关 10 s）。
+- 源码 diff：`dependencies.sh` 1 行 + base64 + sha256 + HEAD；脚本不回传。
+- 环境收尾：target/client 状态、strip 64K、load、文件保存路径。
+
+## 七、回退
+
+- 运行时：关掉 stage env（不影响干净跑）。
+- 构建时：`dependencies.sh` 改回 `4f8a8466...`，切回旧 build。
+- 完整基线：旧 build + 旧 deps 的 tar/md5；R37 meta 记录。
