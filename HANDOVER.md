@@ -102,7 +102,8 @@
 | E3-AK | 2026-11-03 | d 1/1 异步 staging 流水原型：NoF range read + 2 块 2 MiB 双缓冲 + cudaMemcpyAsync | 已关闭（回退） | 重叠成立（copy0 2.2 µs、get1 217.9、sync 192.1）；P50 614→523（−14.9%），mean 685.5→680.8（−0.7%，噪声内）；拆分 2×2 MiB 使 transport 296.7→434.6（+46%），抵消 copy 节省 144；P90/P99/Pmax 变差（B r1 Pmax 5.35 ms > 5 ms）→ 按判据停止并回退；10/10 正确、failed=0；node2 未动 |
 | E3-AL | 2026-11-03 | 第四次测试：4MB 全量矩阵（16 格干净表）+ 每场景 1/1 打点拆解（四值表 + xlsx 副本） | 已关闭 | 16 格 40 样本 failed=0；1/1 a 368.46 / b 481.02 / c 467.29 / d 682.63；四值 −7.9%/−26.7%/−0.5%/−11.7%；16/16 a 12.69 / b 11.35 / c 12.68 / d 11.42；b 16/16 +3.5%（更优）；P9999 两格不可用；xlsx 176/176；原表未变 |
 | E3-AM | 2026-11-04 | 第五次测试：d 合并段 60 µs 归因（SPDK e12b7cb + stage buffer 两段打点 + 旧/新 A/B） | 已关闭（替代方案，不作为最终证据；转 E3-AN） | 60 拆开并闭合（SSD 141.3 + URMA 43.8 + outside 39.6 + 1.4 = 226.1）；**修正口径：URMA+outside=83.4≈模型 86.4，gap 实为 SSD 段尾部/排队**；per-sub-IO bdev P50 75≈模型 80、P90 260/P99 303；e12b7cb 未拉取（node4 无 DNS），用本地 spdk_v2@5e727fd 的 stdout stage trace 替代；**用户不接受该替代作为最终证据；必须拉 e12b7cb + 独立测量（E3-AN）**；旧/新 SPDK A/B 未做；trace 开销 −2.3% 吞吐/+4.5% mean |
-| E3-AN | 2026-11-04 | 第五次测试修正：e12b7cb 必须拉取 + 独立测量 d 合并段（SSD→node4 DRAM）；保留 E3-AM trace 拆解作对照 | 待执行 | — |
+| E3-AN | 2026-11-04 | 第五次测试修正：e12b7cb 必须拉取 + 独立测量 d 合并段（SSD→node4 DRAM）；保留 E3-AM trace 拆解作对照 | 部分完成（拉取/构建/七子阶段/A-B 完成；独立测量未做） | e12b7cb 经 Windows 代理拉取 + scp，tarball sha256 f98de24f…；node4 编译 nvmf_tgt e7440ae0…（旧 104014a9…），node2 已部署；七子阶段：bdev 79.4/261.9/314.8（mean 121.60），bdev 软件开销 0.47 µs（0.4%），99.6% 是异步等待，enomem 恒 0；旧/新 A/B：5.72→5.76 GiB/s、P50 221.7→205.0、mean 294.7→291.9（新 1 轮，待 3 轮确认）；**独立测量仍未做** |
+| E3-AO | 2026-11-04 | 第五次测试收口：独立测量 4MB SSD→node4 DRAM（不经过 Mooncake）+ 3 轮旧/新 A/B + trace 对照 | 待执行 | — |
 
 ---
 
@@ -2515,7 +2516,7 @@ v15 bdev_cpl, v16 data_post, v17 data_cpl, v18 t_rel0, v19 target_lcore, v20 fla
 
 ---
 
-# E3-AN（待执行 · 2026-11-04）· 第五次测试修正：e12b7cb 必须拉取 + 独立测量 d 合并段
+# E3-AN（部分完成 · 2026-11-04）· 第五次测试修正：e12b7cb 必须拉取 + 独立测量 d 合并段
 
 > 用户明确：**不接受 E3-AM 的 legacy stdout 替代 trace 作为最终证据**；必须想办法拉 `e12b7cb`，
 > 并且**不是**在真实路径里拆（stage trace），而是**单独测** d 的合并段：
@@ -2600,3 +2601,63 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 
 - 运行时/构建时：`dependencies.sh` 改回 `4f8a8466`，切回旧 build。
 - 完整基线：旧 build + 旧 deps tar/md5；R38 meta 记录。
+
+## 回执（2026-11-04，部分完成）
+
+- 拉取：node4/node3 无法解析/连接公司代理（DNS_FAIL / TCP_FAIL）；改在**内网 Windows** 走公司代理 `curl -x` 下 tarball，scp 到 node4/node2。tarball 4 377 078 B，sha256 `f98de24f…`（三处一致）。
+- 构建：node4 `./configure --with-urma=$HOME/nds/UMDK_netlab --with-dpdk=$HOME/nds/spdk/dpdk/build --without-isal-crypto --without-crypto --disable-tests --disable-unit-tests --disable-examples`；`make -j64` rc=0；`nvmf_tgt` 15 072 416 B / md5 `e7440ae0…`（旧 14 983 984 / `104014a9…`）。
+- 部署：node2 target = `e7440ae0…`，pid 1326057，4421，Raid0 5 盘 online；`dependencies.sh` L97 已改 e12b7cb（md5 `4fbaeec6→de8e2172`），备份 `dependencies.sh.bak_e3an`；旧 target 备份 `nvmf_tgt.5e727fd0c.bak`。
+- 七子阶段（60 s，5 549 824 条 64 KiB op，dump 头尾 magic 正确、dropped=0）：`bdev` 79.4/261.9/314.8（max 3542.2，mean 121.60）；`exec_to_read` 0.0/0.1/0.1（0.04）；`read_to_submit` 0/0/0（0.01）；`submit_call` 0.4/0.5/0.5（0.40）；`submit_to_callback` 79.4/261.9/314.8（121.53）；`callback_to_complete` 0/0/0.1（0.02）；`enomem_wait` 0；`enomem_count` 0。恒等式闭合 0.000 µs；**bdev 软件开销 0.47 µs（0.4%），99.6% 是异步等待** → raid0+5 盘排队/设备服务。
+- 旧/新 A/B（trace off；旧 3×60 s R37，新 1×60 s）：旧 5.72 GiB/s / P50 221.7 / mean 294.7；新 5.76 / 205.0 / 291.9（+0.7% / −7.5% / −1.0%）；trace on：新 5.64 / P50 226 vs 旧 5.587 / 241。新 build 不退化，P50 改善约 17 µs；**新臂只有 1 轮，需 3 轮确认**。
+- **未做（关键）**：仍然没有“不经过 Mooncake”的独立端到端测量；本轮是 target bdev 七子阶段的 in-path trace。用户明确要求的是独立测量，E3-AO 继续。
+- 其他：客户端未重编（capsule ABI 未变，旧客户端可直连新 target；reader 侧新 sink 在旧客户端无效）；异步等待内部（控制器队列→盘内队列→NAND）无分界 tick，需驱动/固件；端口 4421；`--verify=false`；failed=0。
+- 产物：R38_20261104_e12b7cb_bdev_stages（`e12_parse_60s.out`、`e12_parse.out`、`E12_smk.out`、`E12B_r1.out`、`E12B_off.out`、`meta.md`）；node2 dump `/tmp/tgt60.bin` 1.07 GB、`tgt_stage_e12.bin` 353 MB、`src_e12b7cb`；回退见台账 §69.9。
+
+---
+
+# E3-AO（待执行 · 2026-11-04）· 第五次测试收口：独立测量 4MB SSD→node4 DRAM
+
+> 用户要求的主证据：**不经过 Mooncake store/client**，单独测 node2 SSD → node2 DRAM → URMA → node4 DRAM 的 4MB 读。
+> E3-AN 已完成 e12b7cb 拉取/构建/部署/七子阶段/A-B；**但独立测量还没做**。
+> E3-AM 的 trace 拆解保留，用于验证 trace 准不准。只做 d 1/1；不跑全量/8MB；不改 stripe/交付表。
+
+## 一、独立测量（主证据）
+
+- 在新 e12b7cb 环境下，用**独立 initiator 工具**从 node2 target（4421、Raid0 5 盘 64K）读 4MB 到 node4 DRAM：
+  - 优先 `urma_perf`（新 SPDK）；若只支持 push，用 `spdk_nvme_perf -t urma` 或最小独立 C 程序；
+  - 关键：不调用 Mooncake `client_->Get`、不做 H2D copy、不过 store；独立进程。
+  - 如果工具方向不支持：请同事 B 给 target/initiator 的现成命令，或写最小程序；**不要再退回 in-path trace**。
+- 3×60 s；记录整段 P50/P90/P99/Pmax、吞吐、failed、在飞/QD；能拆 SSD/网络就拆，拆不了以整段为准。
+- 与 Mooncake d transfer 对比：
+  - 新 build Mooncake d（E3-AN，1 轮）P50 205.0 / mean 291.9；旧 221.7 / 294.7；模型 166.4；
+  - 若独立 ≈ Mooncake（≤5%），Mooncake 层不是 gap；若独立明显低，Mooncake 层有开销；若独立高，检查工具/配置是否等价。
+
+## 二、3 轮旧/新 A/B（确认 205 不是单轮偶然）
+
+- 新 build（e12b7cb）3×60 s，trace off；旧 build（5e727fd0c）3×60 s（或有 R37 3 轮基线）；同客户端/同配置。
+- 判据：新 P50 205 / mean 291.9 是否在 3 轮内复现；吞吐/P50/mean 与旧差 <3% 还是 >3%；任何 failed>0 停。
+
+## 三、trace 对照（保留 E3-AM/E3-AN，不丢）
+
+- E3-AM trace：SSD 141.3 / URMA 43.8 / outside 39.6 / 残差 1.4 = 226.1；per-sub-IO bdev P50 75 / P90 260 / P99 303 / mean 118.4。
+- E3-AN 新 trace：bdev P50 79.4 / P90 261.9 / P99 314.8 / mean 121.60；bdev 软件 0.47 µs；99.6% 异步等待；enomem 0。
+- 独立测量整段 X 后：对 226/205 与 141.3/43.8 做对照，给出 trace 误差；拆不了就只对整段。
+- 报告写“trace 拆解 vs 独立测量”的对照表；**trace 不能替代独立测量**。
+
+## 四、判据
+
+- 独立测量必须真实完成（有工具命令/输出/文件），不得再用 in-path trace 替代。
+- 3 轮 A/B 确认新 build 的 205 是否稳定；不稳定则回到旧 build 或记录波动。
+- 任何 failed>0/STUCK → 停；不改交付表。
+
+## 五、产物
+
+- `R39_20261104_d_standalone/`：meta、summary、独立工具原始输出、3 轮 A/B 日志、env、命令、md5；
+- `trace_vs_standalone.md`：E3-AM/E3-AN trace vs 独立测量；
+- 新 build 部署记录、旧 build 备份、回退命令；
+- 脚本 md5（不回传）。
+
+## 六、回退
+
+- 新 target：`cp -p ~/nds/spdk_v2_runtime/nvmf_tgt.5e727fd0c.bak ~/nds/spdk_v2_runtime/nvmf_tgt` + `node2_target_up.sh`；
+- `dependencies.sh`：`cp -p ~/nds/Mooncake/dependencies.sh.bak_e3an ~/nds/Mooncake/dependencies.sh`。
