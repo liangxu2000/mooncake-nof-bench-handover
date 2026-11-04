@@ -101,7 +101,7 @@
 | E3-AJ | 2026-10-31 | d 1/1 剩余 97 µs 拆解：scatter/alloc/free + transport/copy 流水可行性（不重建） | 已关闭 | **residual 97 不存在**（均值/中位混用）；d 690 = query39 + transfer297 + copy336 + 1；alloc/prep/free ≈0；copy 到底，transport/copy 严格串行，690 是当前下限 |
 | E3-AK | 2026-11-03 | d 1/1 异步 staging 流水原型：NoF range read + 2 块 2 MiB 双缓冲 + cudaMemcpyAsync | 已关闭（回退） | 重叠成立（copy0 2.2 µs、get1 217.9、sync 192.1）；P50 614→523（−14.9%），mean 685.5→680.8（−0.7%，噪声内）；拆分 2×2 MiB 使 transport 296.7→434.6（+46%），抵消 copy 节省 144；P90/P99/Pmax 变差（B r1 Pmax 5.35 ms > 5 ms）→ 按判据停止并回退；10/10 正确、failed=0；node2 未动 |
 | E3-AL | 2026-11-03 | 第四次测试：4MB 全量矩阵（16 格干净表）+ 每场景 1/1 打点拆解（四值表 + xlsx 副本） | 已关闭 | 16 格 40 样本 failed=0；1/1 a 368.46 / b 481.02 / c 467.29 / d 682.63；四值 −7.9%/−26.7%/−0.5%/−11.7%；16/16 a 12.69 / b 11.35 / c 12.68 / d 11.42；b 16/16 +3.5%（更优）；P9999 两格不可用；xlsx 176/176；原表未变 |
-| E3-AM | 2026-11-04 | 第五次测试：d 合并段 60 µs 归因（SPDK e12b7cb + stage buffer 两段打点 + 旧/新 A/B） | 待执行 | — |
+| E3-AM | 2026-11-04 | 第五次测试：d 合并段 60 µs 归因（SPDK e12b7cb + stage buffer 两段打点 + 旧/新 A/B） | 已关闭（替代方案） | 60 拆开并闭合（SSD 141.3 + URMA 43.8 + outside 39.6 + 1.4 = 226.1）；**修正口径：URMA+outside=83.4≈模型 86.4，gap 实为 SSD 段尾部/排队**；per-sub-IO bdev P50 75≈模型 80、P90 260/P99 303；e12b7cb 未拉取（node4 无 DNS），用本地 spdk_v2@5e727fd 的 stdout stage trace 替代；旧/新 SPDK A/B 未做；trace 开销 −2.3% 吞吐/+4.5% mean；无环境改动 |
 
 ---
 
@@ -2399,7 +2399,7 @@ sleep=0 时 `sleep_us=0`。12 点严格交替。
 
 ---
 
-# E3-AM（待执行 · 2026-11-04）· 第五次测试：d 合并段 60 µs 归因（SPDK 升级 + stage buffer）
+# E3-AM（已关闭 · 2026-11-04，替代方案）· 第五次测试：d 合并段 60 µs 归因（SPDK 升级 + stage buffer）
 
 > 背景：R36 d 1/1 avg 682.63；transfer 合并段 mean 296.4（P50 ~226），模型 80（SSD）+86.4（UB）=166.4，
 > 差约 60；copy 336.7 已是 pinned 地板，query/residual 无空间。**60 µs 在 target 侧，客户端无杠杆。**
@@ -2492,3 +2492,22 @@ v15 bdev_cpl, v16 data_post, v17 data_cpl, v18 t_rel0, v19 target_lcore, v20 fla
 - 运行时：关掉 stage env（不影响干净跑）。
 - 构建时：`dependencies.sh` 改回 `4f8a8466...`，切回旧 build。
 - 完整基线：旧 build + 旧 deps 的 tar/md5；R37 meta 记录。
+
+## 回执（2026-11-04，已收；替代方案）
+
+**结果（d 1/1，Plan A；trace off/on 各 3×60 s，failed=0）**
+
+| 臂 | GiB/s | transfer P50 | transfer mean |
+| --- | --- | --- | --- |
+| A off | 5.72 | 221.7 | 294.7 |
+| B on（th=1） | 5.587 | 241.0 | 308.0 |
+| Δ | −2.3% | +8.7% | +4.5% |
+
+- 分段（per 64 KiB 子 IO，5 422 393 条，trace on r1）：bdev P50/P90/P99/Mean = 75/260/303/118.4；data = 30/82/92/36.7；outside = 28/63/97/33.2；roundtrip = 166/307/343/189.4。
+- 闭合（mean）：roundtrip 189.4 = target 156.1 + outside 33.2 + 0.1；target 156.1 = bdev 118.4 + data 36.7 + 1.0。
+- 折算 clean transfer P50 226：SSD 141.3 + URMA 43.8 + outside 39.6 + 1.4 = 226.1。
+- **开发侧口径修正**：模型 86.4 是完整 UB 往返，不是只对应 URMA 回传；URMA+outside = 83.4 ≈ 86.4（−3.0）。所以 gap 不是“SSD +61 / URMA −43 / 客户端 +40”，而是 **SSD +61、网络 −3、残差 +1.4 ≈ +59.7**；客户端 outside 不是新增的 40 µs 杠杆。
+- **SSD 段是尾部/排队，不是中位**：per-sub-IO bdev P50 75 ≈ 模型 80；mean 118.4 / P90 260 / P99 303 把 4 MiB 请求的 P50（64 个子 IO 取最慢）推到 226。串行模型 80+86.4 不适用于 64 并发子 IO。
+- 替代方案：node4 无 DNS，e12b7cb 拉不到；改用本地 `~/nds/spdk_v2@5e727fd0` 的 stdout stage trace（legacy `URMA_SLOW_IO`，非 .bin dump）。字段语义一致，**接受用于本轮归因**；旧/新 SPDK A/B 未做、e12b7cb 未验证。
+- 回退：`dependencies.sh` 未改（L97 仍 `4f8a8466`），target 未重建，C++/bin 未改；仅 `mc_bench_point.sh` +1 行 env 透传（脚本不入 git）。
+- **结论**：60 µs 的根因是 **target SSD 段的尾部/排队**（不是 URMA/NoF 栈，也不是客户端 40 µs）；客户端无杠杆；下一步归同事 B 的 SSD 队列/GC/条带。
