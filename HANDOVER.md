@@ -2525,6 +2525,11 @@ v15 bdev_cpl, v16 data_post, v17 data_cpl, v18 t_rel0, v19 target_lcore, v20 fla
 
 ## 一、拉 e12b7cb（必须想办法）
 
+> **拓扑提醒（既定事实）**：node2/node4 本身没有外网/DNS；历次代码都是在内网机器上用公司一次性代理拉的
+> （HANDOVER 每轮 `git -c http.proxy=http://proxycn2.huawei.com:8080 pull` 就是这条链路），
+> 节点只接收源码/二进制。**不要在 node4 上直接 clone**；在内网构建机拉，再拷到节点/构建目录。
+> 之前 SPDK 5e727fd 的源码已经在构建机上，e12b7cb 用同一条代理链路拉即可。
+
 - 目标 ref：`e12b7cb213a9c1a2a22b99ab4732c8c11f95032c`（`urma_enable_v2`）。
 - 先在内网构建机（不是 node4）用公司一次性代理，和 HANDOVER 同款：
   `git -c http.proxy=http://proxycn2.huawei.com:8080 -c https.proxy=http://proxycn2.huawei.com:8080 clone/fetch https://github.com/yyyuanhao426-hash/spdk.git`
