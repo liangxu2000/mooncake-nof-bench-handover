@@ -101,7 +101,8 @@
 | E3-AJ | 2026-10-31 | d 1/1 剩余 97 µs 拆解：scatter/alloc/free + transport/copy 流水可行性（不重建） | 已关闭 | **residual 97 不存在**（均值/中位混用）；d 690 = query39 + transfer297 + copy336 + 1；alloc/prep/free ≈0；copy 到底，transport/copy 严格串行，690 是当前下限 |
 | E3-AK | 2026-11-03 | d 1/1 异步 staging 流水原型：NoF range read + 2 块 2 MiB 双缓冲 + cudaMemcpyAsync | 已关闭（回退） | 重叠成立（copy0 2.2 µs、get1 217.9、sync 192.1）；P50 614→523（−14.9%），mean 685.5→680.8（−0.7%，噪声内）；拆分 2×2 MiB 使 transport 296.7→434.6（+46%），抵消 copy 节省 144；P90/P99/Pmax 变差（B r1 Pmax 5.35 ms > 5 ms）→ 按判据停止并回退；10/10 正确、failed=0；node2 未动 |
 | E3-AL | 2026-11-03 | 第四次测试：4MB 全量矩阵（16 格干净表）+ 每场景 1/1 打点拆解（四值表 + xlsx 副本） | 已关闭 | 16 格 40 样本 failed=0；1/1 a 368.46 / b 481.02 / c 467.29 / d 682.63；四值 −7.9%/−26.7%/−0.5%/−11.7%；16/16 a 12.69 / b 11.35 / c 12.68 / d 11.42；b 16/16 +3.5%（更优）；P9999 两格不可用；xlsx 176/176；原表未变 |
-| E3-AM | 2026-11-04 | 第五次测试：d 合并段 60 µs 归因（SPDK e12b7cb + stage buffer 两段打点 + 旧/新 A/B） | 已关闭（替代方案） | 60 拆开并闭合（SSD 141.3 + URMA 43.8 + outside 39.6 + 1.4 = 226.1）；**修正口径：URMA+outside=83.4≈模型 86.4，gap 实为 SSD 段尾部/排队**；per-sub-IO bdev P50 75≈模型 80、P90 260/P99 303；e12b7cb 未拉取（node4 无 DNS），用本地 spdk_v2@5e727fd 的 stdout stage trace 替代；旧/新 SPDK A/B 未做；trace 开销 −2.3% 吞吐/+4.5% mean；无环境改动 |
+| E3-AM | 2026-11-04 | 第五次测试：d 合并段 60 µs 归因（SPDK e12b7cb + stage buffer 两段打点 + 旧/新 A/B） | 已关闭（替代方案，不作为最终证据；转 E3-AN） | 60 拆开并闭合（SSD 141.3 + URMA 43.8 + outside 39.6 + 1.4 = 226.1）；**修正口径：URMA+outside=83.4≈模型 86.4，gap 实为 SSD 段尾部/排队**；per-sub-IO bdev P50 75≈模型 80、P90 260/P99 303；e12b7cb 未拉取（node4 无 DNS），用本地 spdk_v2@5e727fd 的 stdout stage trace 替代；**用户不接受该替代作为最终证据；必须拉 e12b7cb + 独立测量（E3-AN）**；旧/新 SPDK A/B 未做；trace 开销 −2.3% 吞吐/+4.5% mean |
+| E3-AN | 2026-11-04 | 第五次测试修正：e12b7cb 必须拉取 + 独立测量 d 合并段（SSD→node4 DRAM）；保留 E3-AM trace 拆解作对照 | 待执行 | — |
 
 ---
 
@@ -2399,7 +2400,7 @@ sleep=0 时 `sleep_us=0`。12 点严格交替。
 
 ---
 
-# E3-AM（已关闭 · 2026-11-04，替代方案）· 第五次测试：d 合并段 60 µs 归因（SPDK 升级 + stage buffer）
+# E3-AM（已关闭 · 2026-11-04，替代方案；用户不接受作为最终证据）· 第五次测试：d 合并段 60 µs 归因（SPDK 升级 + stage buffer）
 
 > 背景：R36 d 1/1 avg 682.63；transfer 合并段 mean 296.4（P50 ~226），模型 80（SSD）+86.4（UB）=166.4，
 > 差约 60；copy 336.7 已是 pinned 地板，query/residual 无空间。**60 µs 在 target 侧，客户端无杠杆。**
@@ -2508,6 +2509,89 @@ v15 bdev_cpl, v16 data_post, v17 data_cpl, v18 t_rel0, v19 target_lcore, v20 fla
 - 折算 clean transfer P50 226：SSD 141.3 + URMA 43.8 + outside 39.6 + 1.4 = 226.1。
 - **开发侧口径修正**：模型 86.4 是完整 UB 往返，不是只对应 URMA 回传；URMA+outside = 83.4 ≈ 86.4（−3.0）。所以 gap 不是“SSD +61 / URMA −43 / 客户端 +40”，而是 **SSD +61、网络 −3、残差 +1.4 ≈ +59.7**；客户端 outside 不是新增的 40 µs 杠杆。
 - **SSD 段是尾部/排队，不是中位**：per-sub-IO bdev P50 75 ≈ 模型 80；mean 118.4 / P90 260 / P99 303 把 4 MiB 请求的 P50（64 个子 IO 取最慢）推到 226。串行模型 80+86.4 不适用于 64 并发子 IO。
-- 替代方案：node4 无 DNS，e12b7cb 拉不到；改用本地 `~/nds/spdk_v2@5e727fd0` 的 stdout stage trace（legacy `URMA_SLOW_IO`，非 .bin dump）。字段语义一致，**接受用于本轮归因**；旧/新 SPDK A/B 未做、e12b7cb 未验证。
+- 替代方案：node4 无 DNS，e12b7cb 拉不到；改用本地 `~/nds/spdk_v2@5e727fd0` 的 stdout stage trace（legacy `URMA_SLOW_IO`，非 .bin dump）。字段语义一致，**开发侧曾接受，但用户不接受作为最终证据**；e12b7cb 未验证、旧/新 SPDK A/B 未做。**转 E3-AN：必须拉 e12b7cb + 独立测量合并段。**
 - 回退：`dependencies.sh` 未改（L97 仍 `4f8a8466`），target 未重建，C++/bin 未改；仅 `mc_bench_point.sh` +1 行 env 透传（脚本不入 git）。
 - **结论**：60 µs 的根因是 **target SSD 段的尾部/排队**（不是 URMA/NoF 栈，也不是客户端 40 µs）；客户端无杠杆；下一步归同事 B 的 SSD 队列/GC/条带。
+
+---
+
+# E3-AN（待执行 · 2026-11-04）· 第五次测试修正：e12b7cb 必须拉取 + 独立测量 d 合并段
+
+> 用户明确：**不接受 E3-AM 的 legacy stdout 替代 trace 作为最终证据**；必须想办法拉 `e12b7cb`，
+> 并且**不是**在真实路径里拆（stage trace），而是**单独测** d 的合并段：
+> node2 SSD → node2 DRAM → URMA → node4 DRAM（4MB），**不经过 Mooncake store/client**。
+> **E3-AM 的 trace 拆解保留，作为对照基线**；E3-AN 独立测完后，看 trace 拆得准不准。
+> 只做 d 1/1；不跑全量/8MB；不改 stripe/交付表。
+
+## 一、拉 e12b7cb（必须想办法）
+
+- 目标 ref：`e12b7cb213a9c1a2a22b99ab4732c8c11f95032c`（`urma_enable_v2`）。
+- 先在内网构建机（不是 node4）用公司一次性代理，和 HANDOVER 同款：
+  `git -c http.proxy=http://proxycn2.huawei.com:8080 -c https.proxy=http://proxycn2.huawei.com:8080 clone/fetch https://github.com/yyyuanhao426-hash/spdk.git`
+- 若 git 不行，用代理下 GitHub tarball：
+  `curl -x http://proxycn2.huawei.com:8080 -L -o spdk-e12b7cb.tar.gz https://github.com/yyyuanhao426-hash/spdk/archive/e12b7cb213a9c1a2a22b99ab4732c8c11f95032c.tar.gz`
+- 若代理/镜像都不行：把**具体命令和报错**贴回来，并给出可选传输方式；**不得再用旧 build 的 trace 替代**。
+- 记录：repo、ref、HEAD、tarball md5、构建命令。
+
+## 二、构建与验证
+
+- Mooncake `dependencies.sh` 的 SPDK pin 改为 e12b7cb（1 行）；重建 client + target；wire 仍 v4。
+- d 1/1 10 s 冒烟 failed=0；旧/新两端同版本。
+- 归档旧 build/旧 deps；回退：`dependencies.sh` 改回 `4f8a8466` + 切回旧 build。
+
+## 三、独立测量合并段（本轮主证据）
+
+- 目标：**不经过 Mooncake store/client**，在 node4 上单独发起 4MB 读：
+  node2 SSD → node2 DRAM → URMA → node4 DRAM。
+- 工具优先级：
+  1. 新 SPDK 的 `urma_perf`（检查是否支持我们的 pull 方向；同 SSD/RAID0/URMA/4MB）；
+  2. 若 `urma_perf` 只支持 push，用最小独立程序或请同事 B 给 target/initiator 命令；
+  3. 关键：独立进程、独立测量，不调用 `client_->Get`、不做 H2D copy、不过 Mooncake store。
+- 记录：整段 P50/P90/P99/Pmax、吞吐、failed、在飞/QD；如果有余力，再分 SSD-only 和 network-only。
+- 新 SPDK 的 `.bin` stage buffer 可作辅助拆分；**主证据是独立端到端测量**。
+
+## 四、与 E3-AM trace 拆解对照（保留，不丢）
+
+E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226）：
+
+| 项 | 参考值 |
+| --- | --- |
+| SSD 段 | 141.3 |
+| URMA 回传 | 43.8 |
+| 客户端 outside | 39.6 |
+| 残差 | 1.4 |
+| 合计 | 226.1 |
+| per-sub-IO bdev | P50 75 / P90 260 / P99 303 / Mean 118.4 |
+| QD 分桶尾部 | bdev>P99 的样本中 62.8% 在 QD 33–64 |
+
+对照要求：
+- 独立测量整段 `X` 与 226 比：`|X−226|/226 ≤5%` → trace 的绝对量级一致；>5% 要解释差在哪（工具/配置/负载）。
+- 若独立测量能拆 SSD/网络：与 141.3 / 43.8 逐项比较，给出 trace 拆解的误差；拆不了就只对整段。
+- QD 尾部假设：若独立工具能调/记录队列深度，看尾部是否随 QD 移动；不能调就做定性对照。
+- **trace 结果不丢弃**；报告里写“trace 拆解 vs 独立测量”的对照表和差异。
+
+## 五、旧/新 A/B（d 1/1）
+
+- A0 旧 `4f8a8466` 3×60 s；B 新 `e12b7cb` 3×60 s；A1 旧再跑（漂移 <3%）。
+- 记录 avg/P50/P90/P99/Pmax、GiB/s、failed、transfer submit/wait。
+- 判据：新 vs 旧 <3% → 5 commit 不影响；>3% 记录方向。
+
+## 六、判据
+
+- e12b7cb 必须真实拉取、构建、运行；回执给出 ref/HEAD/tarball md5；不得再用旧 trace 替代。
+- 独立测量能给出整段分布，并与 d 226 对账；差异 >5% 要解释。
+- trace 对照表必须给出；不能用 trace 替代独立测量。
+- 任何 failed>0/STUCK → 停；不改交付表。
+
+## 七、产物
+
+- `R38_20261104_d_standalone/`：meta、summary、独立测量原始输出、A0/B/A1 日志、env、命令、md5；
+- e12b7cb 拉取记录（repo/ref/HEAD/tarball md5）、`dependencies.sh` 1 行 diff + base64 + sha256；
+- 独立工具命令/脚本 md5（脚本不回传）；
+- `trace_vs_standalone.md`：E3-AM trace 拆解 vs 独立测量的对照表与差异；
+- 环境收尾、回退记录。
+
+## 八、回退
+
+- 运行时/构建时：`dependencies.sh` 改回 `4f8a8466`，切回旧 build。
+- 完整基线：旧 build + 旧 deps tar/md5；R38 meta 记录。
