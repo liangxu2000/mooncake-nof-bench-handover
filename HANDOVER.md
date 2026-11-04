@@ -104,6 +104,7 @@
 | E3-AM | 2026-11-04 | 第五次测试：d 合并段 60 µs 归因（SPDK e12b7cb + stage buffer 两段打点 + 旧/新 A/B） | 已关闭（替代方案，不作为最终证据；转 E3-AN） | 60 拆开并闭合（SSD 141.3 + URMA 43.8 + outside 39.6 + 1.4 = 226.1）；**修正口径：URMA+outside=83.4≈模型 86.4，gap 实为 SSD 段尾部/排队**；per-sub-IO bdev P50 75≈模型 80、P90 260/P99 303；e12b7cb 未拉取（node4 无 DNS），用本地 spdk_v2@5e727fd 的 stdout stage trace 替代；**用户不接受该替代作为最终证据；必须拉 e12b7cb + 独立测量（E3-AN）**；旧/新 SPDK A/B 未做；trace 开销 −2.3% 吞吐/+4.5% mean |
 | E3-AN | 2026-11-04 | 第五次测试修正：e12b7cb 必须拉取 + 独立测量 d 合并段（SSD→node4 DRAM）；保留 E3-AM trace 拆解作对照 | 已完成（独立测量转 E3-AO） | e12b7cb 经 Windows 代理拉取 + scp，tarball sha256 f98de24f…；node4 编译 nvmf_tgt e7440ae0…（旧 104014a9…），node2 已部署；七子阶段：bdev 79.4/261.9/314.8（mean 121.60），bdev 软件开销 0.47 µs（0.4%），99.6% 是异步等待，enomem 恒 0；**单轮 P50 −7.5% 已撤回；3 轮 old/new 205.7/208.7（+1.5%），等价**；独立测量见 E3-AO |
 | E3-AO | 2026-11-04 | 第五次测试收口：独立测量 4MB SSD→node4 DRAM（不经过 Mooncake）+ 3 轮旧/新 A/B + trace 对照 | 已关闭 | 独立测试 P50 181.7 / P90 198.8 / P99 364.4 / avg 193.6 µs，20.2 GiB/s，failed=0；trace SSD+URMA 185.1 vs 181.7（−1.8%）→ 拆分准确；226−outside 39.6=186.5 vs 181.7（2.6%）→ 226 与独立的差是客户端 outside；clean 3 轮 old/new 205.7/208.7 vs 独立 181.7 = 24–27 µs（含 QD=1 vs 在飞 26 的并发），**60 不是全在 SSD**；新/旧等价；QD 扫描失败 |
+| E3-AP | 2026-11-04 | 第五次测试收口：把 +24 µs 分成 A（target 设备队列/并发）还是 B（Mooncake 客户端/拆分） | 待执行 | — |
 
 ---
 
@@ -2688,3 +2689,54 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 - 合计 ≈ **+59.6**：**60 不是全在 SSD**；SSD 141 vs 80 被 URMA 43.8 vs 86.4 抵消，净 standalone 只 +15。
 - 新 build 与旧 build 等价；e12b7cb 有 trace 能力，可保留或回退，性能无差。
 - QD 尾部假设（E3-AM QD 33–64）仍未被独立工具验证；剩余 target 侧问题需 QD 可调工具或同事 B 的 SSD 队列/GC。
+
+---
+
+# E3-AP（待执行 · 2026-11-04）· 第五次测试收口：把 +24 µs 分成 A（target 队列/并发）还是 B（Mooncake 客户端/拆分）
+
+> 目标：clean Mooncake 205.7/208.7 vs 独立 181.7 = **+24**；判断这 24 是
+> **A：target 设备队列/并发（在飞 26）**，还是 **B：Mooncake 客户端/拆分**。
+> 只做 d 1/1；不改代码；不跑全量/8MB/stripe/交付表。
+> 前置：e12b7cb 已部署；target stage buffer 可用；旧客户端；d 1/1 Plan A。
+
+## 一、实验 1（主）：独立 QD=1 + target stage buffer
+
+- 用 `spdk_nvme_perf`（新 SPDK）QD=1、4MB、3×60 s；同时开 target stage buffer：
+  - target：`SPDK_URMA_STAGE_TRACE_US=1`、`SPDK_URMA_STAGE_TARGET_SINK=buffer`、
+    `SPDK_URMA_STAGE_TARGET_PATH=/var/tmp/stage_ap/<unique>.bin`、`SPDK_URMA_STAGE_TARGET_CAPACITY=500000`。
+  - reader 侧用的是新 SPDK；若它不设 trace flag，target 无记录。先做 10 s smoke，确认 dump 有
+    `URMA3B01/URMA3END` 且有记录；没有就记录并转实验 2。
+- 解析 target bdev 分布，与 Mooncake 的 bdev 79.4 / 261.9 / 314.8 / mean 121.6 比较。
+- 判据：
+  - 独立 bdev ≈ Mooncake bdev → target 队列在 QD=1 就存在；**+24 是 Mooncake 客户端/发起端（B）**。
+  - 独立 bdev 明显低（如 mean 50–60）→ **+24 是 target 队列在在飞 26 的并发（A）**。
+
+## 二、实验 2（可选，QD/IO 形态匹配）
+
+- 尝试 `spdk_nvme_perf -q 4`、64 KiB，复现 Mooncake 的 64×64 KiB、4 qpair、在飞 ~26；
+  上次 `-q 4` 报 `Unknown transport type 4098` 后挂起。
+- 尝试：不同 `-r` 串、`-o 64K`、`-q 4`、`-c 0x1/0xf`；仍失败就用最小程序，或记录“工具不支持 QD>1”。
+- 若 QD=4/64 KiB 独立跑出 ~205 → **A**；仍 ~181 → **B**。
+- 若做不到，主结论以实验 1 的 bdev 对照为准，并注明 QD 不可调。
+
+## 三、参照值
+
+- clean Mooncake transfer P50：old 205.7 / new 208.7（3×60 s，trace off）。
+- 独立 QD=1：181.7。
+- Mooncake target bdev：P50 79.4 / P90 261.9 / P99 314.8 / mean 121.6；bdev 软件 0.47 µs；enomem 0。
+- 诊断批 226（trace/diag，不是 clean）。
+
+## 四、判据/结论
+
+- 必须给出 **A** 或 **B** 的结论，或明确“工具做不到 QD>1，无法分辨”；**不能猜**。
+- 任何 failed>0/STUCK → 停；不改交付表；不改代码。
+
+## 五、产物
+
+- `R40_20261104_d_24us_split/`：meta、summary、独立 QD=1 stage dump/parse、bdev 对照表、
+  QD=4 尝试日志、命令、md5；
+- 结论 A/B 一页；脚本 md5（不回传）。
+
+## 六、回退
+
+- 诊断 env 关掉即可；target 无需回退（新 build 保留）；旧 build 备份 `nvmf_tgt.5e727fd0c.bak`。
