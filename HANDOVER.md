@@ -107,6 +107,7 @@
 | E3-AP | 2026-11-04 | 第五次测试收口：把 +24 µs 分成 A（target 设备队列/并发）还是 B（Mooncake 客户端/拆分） | 已关闭 | **判定 A：target 设备队列/形态；B 否**。同形态独立复现：64K×QD4×4qpair avg 212.12 vs Mooncake clean 205.7（+3.1%），target bdev mean 130.94 vs 121.60（+7.7%），不经过 Mooncake 同量级；独立 4MB QD=1 bdev mean 59.3，只有 Mooncake 121.6 的一半。target 软件栈 submit 0.41–0.46 µs、恒等式 0、enomem 0。**+24 = 形态 +30.4 − Mooncake 编排 6.4**；60 = 15.3 + 30.4 − 6.4 + 20.3 ≈ 59.6。提速方向是减少 64 KiB 单发/提高批式与顺序性，不是客户端软件。** |
 | E3-AQ | 2026-11-04 | 第五次测试续：NoF submit chunk 128K vs 1M/4M（d 1/1，env only），验证能否把 bdev 121.6 推向 59.6 | 已关闭（chunk 无效） | 128K→1M/4M：吞吐 −0.45%/−0.48%，transfer mean +0.69%/+0.76%，d avg +0.46%/+0.49%，target bdev 121.96→123.26（反而差 1.1%），全部 ≤3% → 停。env 已生效（blocks_per_chunk 256→8192，提交 32→1 次），但 target 形态不变（blocks_top 仍 128,N；在飞 strip 11.27→11.42）：`inflight_blocks_limit=16384` 卡住 submit_lba_count。**59.6 不是提交粒度，是“一条 4MB = 64 strip 同时在盘 + 顺序 LBA + 在飞 18.8”；Mooncake 32MiB 窗口 + 随机 key 区域到不了。** 12 轮 failed=0；A1 漂移 −0.48% |
 | E3-AR | 2026-11-05 | NoF 在飞窗口/workers（limit 32/64/128MiB、workers 4/8/16）+ 独立随机 vs 顺序 LBA（d 1/1） | 已关闭（客户端旋钮全无效） | 7 臂×3×60 s、21 轮 failed=0：A0 5.640 GiB/s / transfer mean 306.2 / d avg 692.5；B1 64MiB、B2 128MiB、B3 w8、B4 w16、B5 qpair8、A1 回切全部 ≤1.4%（漂移 0.15%）。env 生效（lane_limit 16384→32768→65536，lanes 4→8），target bdev 121.53→121.96（+0.35%）不动。**机制：4MB Get 全落一条 lane，但 lane 90% 空闲（client Get 深度=1，中间 336 µs copy），窗口只用 ~10%，所以调窗口/worker/lane 都没用。** 随机 LBA 只解释尾部（bdev mean 61.42→74.34，P99 150.3→317.8；均值仍只有 121.5 的 61%）。Mooncake 在飞 11.2 < perf 16.8/20.2 却更慢，再次否定“排队深度”。**客户端旋钮全部关掉；转 target 侧（qpair 深度/raid0/注册区碎片）** |
+| E3-AS | 2026-11-05 | Mooncake 仅 SSD→node4 DRAM（host-only，无 H2D copy/无 GDR）vs 裸 SPDK 同形态：验证 Mooncake 是否始终比裸 SPDK 慢（P50/mean/P90/P99 同口径） | 待执行 | — |
 
 ---
 
@@ -2851,3 +2852,47 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 - 未做：CPU 未测（3 种采样均失败）；随机 LBA + QD4×4 组合（4 MB×多 qpair 挂死）；target qpair 深度（`nvmf_create_transport -q 128`）与 raid0 strip 策略（同事 B）；NoF 注册区间物理分布/碎片未验证。
 - 风险：`mc_bench_point.sh` 的 `EXTRA_ENV` 是白名单，不透传这三个 env；改用直接调 bench 二进制 + `nof_qos_create` 确认。A0 5.640 vs E3-AQ 5.781（−2.4%，load 15.5–16.5），只做本轮内相对比较。中途一次 CPU 冒烟时 target 已停，4 个 8 s 冒烟 rc=0 但实际 `Ctrlr operation failed -111`，已复位重跑。
 - 产物：R42_20261105_d_inflight（44 文件/194.3 KB）；target 已复位（pid 2609484、4421=1、e7440ae0）；21 轮 full log 跑完即删；零源码 diff，`dependencies.sh` 仍 de8e2172。
+
+---
+
+# E3-AS（待执行 · 2026-11-05）· Mooncake 仅 SSD→node4 DRAM vs 裸 SPDK 同形态
+
+> 背景：同事 B 提出“同一链路，Mooncake 可能始终比裸 SPDK 慢”。现有数据：
+> P50 Mooncake 205.7/208.7 vs 裸同形态 avg 212.12（Mooncake 不慢）；
+> **mean Mooncake 289.6/306.2 vs 裸 212.12（Mooncake 更高）**——所以他的点在 mean/tail 上可能成立，需要同统计量、同形态、host-only 的对照。
+> 只做 d 1/1、4MB；不改 Mooncake 源码；不跑全量/8MB/stripe/交付表。
+
+## 一、Mooncake host-only（主）
+
+- 目标：Mooncake client 从 node2 NoF target 读 4MB 到 node4 **DRAM**，**不做 H2D copy、不走 GDR/GDS**；
+  node4 的 client buffer 池（host DRAM）就是 NoF 注册 segment。
+- 用现有 host 读路径（`get_buffer`/host buffer；有 CLI 用 CLI）；若 bench 没有 host-only flag，
+  写最小 bench harness（不改 Mooncake 语义）；确认真的没有 copy。
+- 3×60 s，Plan A（1M slice/pin/sleep0；NoF 不消费 slice，但保持一致）；
+  记录 query/transfer/total、P50/mean/P90/P99/Pmax、failed；确认 staged_bytes/copy 为 0（host-only）。
+- 与 d 的 transfer 段（205.7/208.7 P50；mean 289.6/306.2）对比：若 host-only ≈ d transfer，
+  说明 d 的 transfer 就是 host-only；若不同，记录差异。
+
+## 二、裸 SPDK 同形态
+
+- `spdk_nvme_perf` 64K×QD4×4qpair，3×60 s；**必须给 P50/mean/P90/P99**，不能只给 avg；
+- 顺序 LBA；如支持随机 LBA，再做一组 random（与 Mooncake 随机 key 区域对齐）。
+- 与 Mooncake host-only 做同统计量对比：P50 vs P50、mean vs mean、P90/P99 vs P90/P99。
+
+## 三、判据
+
+- 若 Mooncake host-only 的 **mean** 显著高于裸 SPDK 同形态（>5%），且 P50 接近 → **同事 B 的点在均值/尾部成立**；
+  报告差异在 median 还是 tail。
+- 若 P50/mean 都在 3% 内 → 不成立，Mooncake 可达裸 SPDK。
+- 若差异只在 tail：结合随机 vs 顺序 LBA，判断是 Mooncake 随机 key 区域/注册碎片，还是客户端栈。
+- 任何 failed>0/STUCK → 停；不改交付表。
+
+## 四、产物
+
+- `R43_20261105_d_hostonly/`：meta、summary、Mooncake host-only 日志、裸 SPDK perf 的 P50/mean/P90/P99、
+  随机/顺序、env、命令、md5；无源码 diff（bench harness 脚本不回传）。
+- **结论一页**：Mooncake vs bare，P50/mean/tail 分开；同统计量，不混 avg/P50。
+
+## 五、回退
+
+- host-only harness 临时用完移除；target 不动；无源码改动。
