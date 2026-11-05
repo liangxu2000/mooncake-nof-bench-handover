@@ -105,6 +105,7 @@
 | E3-AN | 2026-11-04 | 第五次测试修正：e12b7cb 必须拉取 + 独立测量 d 合并段（SSD→node4 DRAM）；保留 E3-AM trace 拆解作对照 | 已完成（独立测量转 E3-AO） | e12b7cb 经 Windows 代理拉取 + scp，tarball sha256 f98de24f…；node4 编译 nvmf_tgt e7440ae0…（旧 104014a9…），node2 已部署；七子阶段：bdev 79.4/261.9/314.8（mean 121.60），bdev 软件开销 0.47 µs（0.4%），99.6% 是异步等待，enomem 恒 0；**单轮 P50 −7.5% 已撤回；3 轮 old/new 205.7/208.7（+1.5%），等价**；独立测量见 E3-AO |
 | E3-AO | 2026-11-04 | 第五次测试收口：独立测量 4MB SSD→node4 DRAM（不经过 Mooncake）+ 3 轮旧/新 A/B + trace 对照 | 已关闭 | 独立测试 P50 181.7 / P90 198.8 / P99 364.4 / avg 193.6 µs，20.2 GiB/s，failed=0；trace SSD+URMA 185.1 vs 181.7（−1.8%）→ 拆分准确；226−outside 39.6=186.5 vs 181.7（2.6%）→ 226 与独立的差是客户端 outside；clean 3 轮 old/new 205.7/208.7 vs 独立 181.7 = 24–27 µs（含 QD=1 vs 在飞 26 的并发），**60 不是全在 SSD**；新/旧等价；QD 扫描失败 |
 | E3-AP | 2026-11-04 | 第五次测试收口：把 +24 µs 分成 A（target 设备队列/并发）还是 B（Mooncake 客户端/拆分） | 已关闭 | **判定 A：target 设备队列/形态；B 否**。同形态独立复现：64K×QD4×4qpair avg 212.12 vs Mooncake clean 205.7（+3.1%），target bdev mean 130.94 vs 121.60（+7.7%），不经过 Mooncake 同量级；独立 4MB QD=1 bdev mean 59.3，只有 Mooncake 121.6 的一半。target 软件栈 submit 0.41–0.46 µs、恒等式 0、enomem 0。**+24 = 形态 +30.4 − Mooncake 编排 6.4**；60 = 15.3 + 30.4 − 6.4 + 20.3 ≈ 59.6。提速方向是减少 64 KiB 单发/提高批式与顺序性，不是客户端软件。** |
+| E3-AQ | 2026-11-04 | 第五次测试续：NoF submit chunk 128K vs 1M/4M（d 1/1，env only），验证能否把 bdev 121.6 推向 59.6 | 待执行 | — |
 
 ---
 
@@ -2754,3 +2755,44 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 - 未做：4 MB×QD4×4 挂死（timeout 75 s，kill -9，rc=137）；未做 `-q 1 -c 0xf`（qpair 数与深度未解耦）；未切控制器队列→盘内队列→NAND；未跑全量/8MB/stripe/交付表。
 - 风险：q4_cf2 的 P50 125.6 高于 Mooncake 79.4，但 P90/P99 更低（171.7/254.2 vs 261.9/314.8），均值 +7.7%，形状不完全等价；q1_64k dump 被截断（dropped 1.19M）；本轮 20 s/轮；4098 告警所有 run 均 2 次，判无害；全部 trace on，整段比 clean 高 +3.5~+9 µs，结论用同 trace 口径的形态对比。
 - 产物：R40_20261104_d_24us_split（21 文件/317.8 KB，meta、summary.csv、target_bdev_compare.md、perf 日志+parse）；node2 target 已复位（pid 1471992、4421=1、e7440ae0、Raid0）；dump 解析后已删（根盘 92%）。
+
+---
+
+# E3-AQ（待执行 · 2026-11-04）· 第五次测试续：NoF submit chunk 128K vs 1M/4M
+
+> 背景：E3-AP 判定 +24 是 **64K×QD4×4qpair 的 I/O 形态**；4MB 批式 bdev 59.6 vs Mooncake 121.6。
+> 先试最便宜的旋钮：**客户端 NoF submit chunk**（env only），看能否把 bdev 从 121.6 推向 59.6。
+> **只做 d 1/1；不改代码；不跑全量/8MB/stripe/交付表。**
+
+## 一、测试
+
+- d 1/1，batch=1，Plan A（1M slice、pin=1、sleep0），4MB，`--verify=false`，3×60 s。
+- 臂（同窗口、单实例）：
+  - A0：`MC_NOF_SUBMIT_CHUNK_BYTES=131072`（128K，现状）；
+  - B1：`1048576`（1M）；
+  - B2：`4194304`（4M）；
+  - A1：回 128K，确认漂移 <3%。
+- 先对 B2 做 10 s smoke；4M 失败/挂死就记录并跳过，改用 1M；任何 failed>0/STUCK 停。
+- 记录：transfer P50/mean、d 总 avg/P50/P90/P99/Pmax、GiB/s、failed、submit 次数/片数、qpair 数。
+
+## 二、bdev 诊断（最佳臂 + A0）
+
+- 用 target stage buffer 跑 1×60 s（env 同 E3-AN/E3-AP；`SPDK_URMA_STAGE_TRACE_US=1` + target sink=buffer），
+  取每 64K strip 的 bdev 分布，与 A0 的 121.6、4MB 批式的 59.6 对比。
+- stage trace 有已知开销（~20 µs 级）；**只在 trace-on 口径内比较 bdev，不混 clean**。
+
+## 三、判据
+
+- B1/B2 的 transfer 或 bdev 改善 **≥5%**，且吞吐/尾部不回退 → 保留，报告。
+- 变化在 **≤3%** → submit chunk 单独不够；停，转 qpair 数/深度/target 调度（同事 B）。
+- 4M 失败/挂死 → 记录，用 1M；任何 failed>0/STUCK → 停。
+- 不改交付表。
+
+## 四、产物
+
+- `R41_20261104_d_nof_chunk/`：meta、summary、A0/B1/B2/A1 日志、bdev parse、env、命令、md5。
+- 无源码 diff（env/脚本 only）。
+
+## 五、回退
+
+- unset `MC_NOF_SUBMIT_CHUNK_BYTES` → 128K 默认；无源码改动；target 不动。
