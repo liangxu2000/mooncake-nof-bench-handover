@@ -105,7 +105,8 @@
 | E3-AN | 2026-11-04 | 第五次测试修正：e12b7cb 必须拉取 + 独立测量 d 合并段（SSD→node4 DRAM）；保留 E3-AM trace 拆解作对照 | 已完成（独立测量转 E3-AO） | e12b7cb 经 Windows 代理拉取 + scp，tarball sha256 f98de24f…；node4 编译 nvmf_tgt e7440ae0…（旧 104014a9…），node2 已部署；七子阶段：bdev 79.4/261.9/314.8（mean 121.60），bdev 软件开销 0.47 µs（0.4%），99.6% 是异步等待，enomem 恒 0；**单轮 P50 −7.5% 已撤回；3 轮 old/new 205.7/208.7（+1.5%），等价**；独立测量见 E3-AO |
 | E3-AO | 2026-11-04 | 第五次测试收口：独立测量 4MB SSD→node4 DRAM（不经过 Mooncake）+ 3 轮旧/新 A/B + trace 对照 | 已关闭 | 独立测试 P50 181.7 / P90 198.8 / P99 364.4 / avg 193.6 µs，20.2 GiB/s，failed=0；trace SSD+URMA 185.1 vs 181.7（−1.8%）→ 拆分准确；226−outside 39.6=186.5 vs 181.7（2.6%）→ 226 与独立的差是客户端 outside；clean 3 轮 old/new 205.7/208.7 vs 独立 181.7 = 24–27 µs（含 QD=1 vs 在飞 26 的并发），**60 不是全在 SSD**；新/旧等价；QD 扫描失败 |
 | E3-AP | 2026-11-04 | 第五次测试收口：把 +24 µs 分成 A（target 设备队列/并发）还是 B（Mooncake 客户端/拆分） | 已关闭 | **判定 A：target 设备队列/形态；B 否**。同形态独立复现：64K×QD4×4qpair avg 212.12 vs Mooncake clean 205.7（+3.1%），target bdev mean 130.94 vs 121.60（+7.7%），不经过 Mooncake 同量级；独立 4MB QD=1 bdev mean 59.3，只有 Mooncake 121.6 的一半。target 软件栈 submit 0.41–0.46 µs、恒等式 0、enomem 0。**+24 = 形态 +30.4 − Mooncake 编排 6.4**；60 = 15.3 + 30.4 − 6.4 + 20.3 ≈ 59.6。提速方向是减少 64 KiB 单发/提高批式与顺序性，不是客户端软件。** |
-| E3-AQ | 2026-11-04 | 第五次测试续：NoF submit chunk 128K vs 1M/4M（d 1/1，env only），验证能否把 bdev 121.6 推向 59.6 | 待执行 | — |
+| E3-AQ | 2026-11-04 | 第五次测试续：NoF submit chunk 128K vs 1M/4M（d 1/1，env only），验证能否把 bdev 121.6 推向 59.6 | 已关闭（chunk 无效） | 128K→1M/4M：吞吐 −0.45%/−0.48%，transfer mean +0.69%/+0.76%，d avg +0.46%/+0.49%，target bdev 121.96→123.26（反而差 1.1%），全部 ≤3% → 停。env 已生效（blocks_per_chunk 256→8192，提交 32→1 次），但 target 形态不变（blocks_top 仍 128,N；在飞 strip 11.27→11.42）：`inflight_blocks_limit=16384` 卡住 submit_lba_count。**59.6 不是提交粒度，是“一条 4MB = 64 strip 同时在盘 + 顺序 LBA + 在飞 18.8”；Mooncake 32MiB 窗口 + 随机 key 区域到不了。** 12 轮 failed=0；A1 漂移 −0.48% |
+| E3-AR | 2026-11-05 | NoF 在飞窗口/workers（limit 32/64/128MiB、workers 4/8/16）+ 独立随机 vs 顺序 LBA（d 1/1） | 待执行 | — |
 
 ---
 
@@ -2758,7 +2759,7 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 
 ---
 
-# E3-AQ（待执行 · 2026-11-04）· 第五次测试续：NoF submit chunk 128K vs 1M/4M
+# E3-AQ（已关闭 · 2026-11-05）· 第五次测试续：NoF submit chunk 128K vs 1M/4M
 
 > 背景：E3-AP 判定 +24 是 **64K×QD4×4qpair 的 I/O 形态**；4MB 批式 bdev 59.6 vs Mooncake 121.6。
 > 先试最便宜的旋钮：**客户端 NoF submit chunk**（env only），看能否把 bdev 从 121.6 推向 59.6。
@@ -2796,3 +2797,43 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 ## 五、回退
 
 - unset `MC_NOF_SUBMIT_CHUNK_BYTES` → 128K 默认；无源码改动；target 不动。
+
+## 回执（2026-11-05，已收）
+
+**结论：submit chunk 无效，按判据停。**
+
+- 主矩阵（3×60 s，d 1/1）：A0 128K 5.781 GiB/s / transfer P50 206.0 / mean 289.6 / d avg 675.6；B1 1M 5.755 / 209.3 / 291.6 / 678.7（−0.45% / +0.69% / +0.46%）；B2 4M 5.753 / 207.3 / 291.8 / 678.9（−0.48% / +0.76% / +0.49%）；A1 128K 5.753 / 208.3 / 290.9 / 679.0（−0.48% / +0.45% / +0.50%）。12 轮 failed=0。
+- env 已生效：`MC_NOF_DEBUG=1` → blocks_per_chunk=256（128K）/8192（4M），4 lane，`lane_inflight_blocks_limit=16384`，segment 32 MiB；4 MB 提交次数 32→1。
+- target 形态没变：两臂 blocks_top 都是 (128,N)；在飞 strip 11.27（A0）/11.42（B2）；bdev mean 121.96→123.26（+1.1%）；软件开销 0.47 µs、enomem 0、异步等待 99.6%。
+- 机制：`transfer_task.cpp` 的 `submit_lba_count` 受 `inflight_blocks_limit=(MC_NOF_INFLIGHT_BYTES_LIMIT/512)/lane_count=16384` 约束；提交变粗，但在飞窗口不变。
+- **对 E3-AP 的修正**：59.6 不是“提交粒度”，是“一条 4 MB = 64 strip 同时在盘 + 顺序 LBA + 在飞 18.8”；Mooncake 32 MiB 窗口 + 随机 key 区域到不了。
+- 未做：`MC_NOF_INFLIGHT_BYTES_LIMIT`、`MC_NOF_WORKERS`、target qpair 深度（`nvmf_create_transport -q 128`）、随机 vs 顺序 LBA 切开。
+- 产物：R41_20261105_d_nof_chunk（26 文件/96.5 KB）；target 诊断 env 已关并复位（pid 2552756、4421=1、e7440ae0）；零源码 diff。
+
+---
+
+# E3-AR（待执行 · 2026-11-05）· NoF 在飞窗口/workers + 随机 vs 顺序 LBA
+
+> 背景：E3-AQ 证明 submit chunk 无效；在飞 strip 11.27 vs 独立 4 MB QD=1 18.8；59.6 可能是“顺序 LBA + 一条 4 MB”的产物。
+> 本轮只做 d 1/1；不改代码；不跑全量/8MB/stripe/交付表。
+
+## 一、in-flight/workers env A/B
+
+- A0 默认：`MC_NOF_INFLIGHT_BYTES_LIMIT=33554432`（32 MiB）、`MC_NOF_WORKERS=4`。
+- B1：limit=67108864（64 MiB）；B2：limit=134217728（128 MiB）；B3：workers=8；B4：workers=16（如支持）。
+- 3×60 s/臂，同窗口，A1 回默认（漂移 <3%）；`MC_NOF_DEBUG=1` 记录 blocks_per_chunk、lane 数、lane_inflight_blocks_limit、在飞 strip。
+- 记录：transfer P50/mean、d avg/P50/P90/P99/Pmax、GiB/s、failed、CPU；最佳臂再加 1×60 s target stage buffer 看 bdev（121.96 基线）。
+- 判据：bdev/transfer 改善 ≥5% 且吞吐/尾部不回退 → 保留；≤3% → 停，转 target qpair 深度（同事 B）。
+
+## 二、随机 vs 顺序 LBA（诊断）
+
+- 用 `spdk_nvme_perf` 4 MB QD=1：顺序 LBA（59.6 那格）vs 随机 LBA（如工具支持；不支持就记录并说明），1×20 s 各一。
+- 若随机 LBA 把 bdev 拉到 ~121 → 59.6 是顺序 LBA 的产物，Mooncake 的随机 key 区域到不了；归 target/SSD。
+- 若随机 LBA 仍 ~59.6 → 59.6 可达，重点在 in-flight/workers。
+- 工具不支持随机 LBA 就明确写“无法切分”，不要猜。
+
+## 三、判据/产物/回退
+
+- 任何 failed>0/STUCK → 停；不改交付表。
+- 产物：`R42_20261105_d_inflight/`（meta、summary、A0/B1–B4/A1 日志、debug、bdev parse、随机/顺序对照、env、命令、md5）；无源码 diff。
+- 回退：unset 两个 env → 默认；target 不动。
