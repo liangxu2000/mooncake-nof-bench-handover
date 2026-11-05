@@ -106,7 +106,7 @@
 | E3-AO | 2026-11-04 | 第五次测试收口：独立测量 4MB SSD→node4 DRAM（不经过 Mooncake）+ 3 轮旧/新 A/B + trace 对照 | 已关闭 | 独立测试 P50 181.7 / P90 198.8 / P99 364.4 / avg 193.6 µs，20.2 GiB/s，failed=0；trace SSD+URMA 185.1 vs 181.7（−1.8%）→ 拆分准确；226−outside 39.6=186.5 vs 181.7（2.6%）→ 226 与独立的差是客户端 outside；clean 3 轮 old/new 205.7/208.7 vs 独立 181.7 = 24–27 µs（含 QD=1 vs 在飞 26 的并发），**60 不是全在 SSD**；新/旧等价；QD 扫描失败 |
 | E3-AP | 2026-11-04 | 第五次测试收口：把 +24 µs 分成 A（target 设备队列/并发）还是 B（Mooncake 客户端/拆分） | 已关闭 | **判定 A：target 设备队列/形态；B 否**。同形态独立复现：64K×QD4×4qpair avg 212.12 vs Mooncake clean 205.7（+3.1%），target bdev mean 130.94 vs 121.60（+7.7%），不经过 Mooncake 同量级；独立 4MB QD=1 bdev mean 59.3，只有 Mooncake 121.6 的一半。target 软件栈 submit 0.41–0.46 µs、恒等式 0、enomem 0。**+24 = 形态 +30.4 − Mooncake 编排 6.4**；60 = 15.3 + 30.4 − 6.4 + 20.3 ≈ 59.6。提速方向是减少 64 KiB 单发/提高批式与顺序性，不是客户端软件。** |
 | E3-AQ | 2026-11-04 | 第五次测试续：NoF submit chunk 128K vs 1M/4M（d 1/1，env only），验证能否把 bdev 121.6 推向 59.6 | 已关闭（chunk 无效） | 128K→1M/4M：吞吐 −0.45%/−0.48%，transfer mean +0.69%/+0.76%，d avg +0.46%/+0.49%，target bdev 121.96→123.26（反而差 1.1%），全部 ≤3% → 停。env 已生效（blocks_per_chunk 256→8192，提交 32→1 次），但 target 形态不变（blocks_top 仍 128,N；在飞 strip 11.27→11.42）：`inflight_blocks_limit=16384` 卡住 submit_lba_count。**59.6 不是提交粒度，是“一条 4MB = 64 strip 同时在盘 + 顺序 LBA + 在飞 18.8”；Mooncake 32MiB 窗口 + 随机 key 区域到不了。** 12 轮 failed=0；A1 漂移 −0.48% |
-| E3-AR | 2026-11-05 | NoF 在飞窗口/workers（limit 32/64/128MiB、workers 4/8/16）+ 独立随机 vs 顺序 LBA（d 1/1） | 待执行 | — |
+| E3-AR | 2026-11-05 | NoF 在飞窗口/workers（limit 32/64/128MiB、workers 4/8/16）+ 独立随机 vs 顺序 LBA（d 1/1） | 已关闭（客户端旋钮全无效） | 7 臂×3×60 s、21 轮 failed=0：A0 5.640 GiB/s / transfer mean 306.2 / d avg 692.5；B1 64MiB、B2 128MiB、B3 w8、B4 w16、B5 qpair8、A1 回切全部 ≤1.4%（漂移 0.15%）。env 生效（lane_limit 16384→32768→65536，lanes 4→8），target bdev 121.53→121.96（+0.35%）不动。**机制：4MB Get 全落一条 lane，但 lane 90% 空闲（client Get 深度=1，中间 336 µs copy），窗口只用 ~10%，所以调窗口/worker/lane 都没用。** 随机 LBA 只解释尾部（bdev mean 61.42→74.34，P99 150.3→317.8；均值仍只有 121.5 的 61%）。Mooncake 在飞 11.2 < perf 16.8/20.2 却更慢，再次否定“排队深度”。**客户端旋钮全部关掉；转 target 侧（qpair 深度/raid0/注册区碎片）** |
 
 ---
 
@@ -2812,7 +2812,7 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 
 ---
 
-# E3-AR（待执行 · 2026-11-05）· NoF 在飞窗口/workers + 随机 vs 顺序 LBA
+# E3-AR（已关闭 · 2026-11-05）· NoF 在飞窗口/workers + 随机 vs 顺序 LBA
 
 > 背景：E3-AQ 证明 submit chunk 无效；在飞 strip 11.27 vs 独立 4 MB QD=1 18.8；59.6 可能是“顺序 LBA + 一条 4 MB”的产物。
 > 本轮只做 d 1/1；不改代码；不跑全量/8MB/stripe/交付表。
@@ -2837,3 +2837,17 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 - 任何 failed>0/STUCK → 停；不改交付表。
 - 产物：`R42_20261105_d_inflight/`（meta、summary、A0/B1–B4/A1 日志、debug、bdev parse、随机/顺序对照、env、命令、md5）；无源码 diff。
 - 回退：unset 两个 env → 默认；target 不动。
+
+## 回执（2026-11-05，已收）
+
+**结论：三个客户端旋钮全部无效，按判据停，转 target 侧（同事 B）。**
+
+- 7 臂×3×60 s、21 轮 failed=0：A0 默认 5.640 GiB/s / transfer mean 306.2 / d avg 692.5；B1(64MiB) −0.31%/−0.05%/+0.31%、B2(128MiB) +0.41%/−0.90%/−0.41%、B3(w8) −0.19%/+0.07%/+0.19%、B4(w16) −0.35%/+0.29%/+0.37%、B5(qpair8) −0.66%/+1.37%/+0.66%、A1 −0.15%/−0.12%/+0.15% → 全部 ≤1.4%，漂移 0.15%。
+- env 确实生效：`lane_inflight_blocks_limit` 16384→32768→65536（8→16→32 MiB/lane）、lanes 4→8；窗口放大 4 倍、lane 翻倍，结果不动。
+- target bdev 也不动：A0 121.53（P50 79.6/P90 261.8/P99 314.7）、B2 121.96（+0.35%）；blocks_top 仍 (128,N)、软件 0.47 µs、恒等式 0。
+- 随机 LBA 只解释尾部：`spdk_nvme_perf -q 1 -o 4M` 端到端 232.83→255.97；bdev mean 61.42→74.34（+21%），P99 150.3→317.8（+111%）；均值仍只有 121.5 的 61% → 随机解释尾部，不解释均值翻倍。
+- 机制（`nof_qos_state`）：一个 4MB Get（8192 块）全落在一条 lane，但 `inflight_idle_ratio≈0.90`、partial≈0.09、full=0 —— client Get 深度=1，Get 之间隔 336 µs H2D copy，lane 90% 空闲，平均只用窗口 ~10%，所以窗口/worker/lane 调大都没用。
+- 在飞 strip：Mooncake 11.2（本轮）/11.5（E3-AQ）vs perf 16.8（顺序）/20.2（随机）→ Mooncake 在飞更少却更慢，再次否定“排队深度”解释。
+- 未做：CPU 未测（3 种采样均失败）；随机 LBA + QD4×4 组合（4 MB×多 qpair 挂死）；target qpair 深度（`nvmf_create_transport -q 128`）与 raid0 strip 策略（同事 B）；NoF 注册区间物理分布/碎片未验证。
+- 风险：`mc_bench_point.sh` 的 `EXTRA_ENV` 是白名单，不透传这三个 env；改用直接调 bench 二进制 + `nof_qos_create` 确认。A0 5.640 vs E3-AQ 5.781（−2.4%，load 15.5–16.5），只做本轮内相对比较。中途一次 CPU 冒烟时 target 已停，4 个 8 s 冒烟 rc=0 但实际 `Ctrlr operation failed -111`，已复位重跑。
+- 产物：R42_20261105_d_inflight（44 文件/194.3 KB）；target 已复位（pid 2609484、4421=1、e7440ae0）；21 轮 full log 跑完即删；零源码 diff，`dependencies.sh` 仍 de8e2172。
