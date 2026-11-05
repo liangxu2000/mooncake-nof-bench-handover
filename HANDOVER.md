@@ -108,7 +108,7 @@
 | E3-AQ | 2026-11-04 | 第五次测试续：NoF submit chunk 128K vs 1M/4M（d 1/1，env only），验证能否把 bdev 121.6 推向 59.6 | 已关闭（chunk 无效） | 128K→1M/4M：吞吐 −0.45%/−0.48%，transfer mean +0.69%/+0.76%，d avg +0.46%/+0.49%，target bdev 121.96→123.26（反而差 1.1%），全部 ≤3% → 停。env 已生效（blocks_per_chunk 256→8192，提交 32→1 次），但 target 形态不变（blocks_top 仍 128,N；在飞 strip 11.27→11.42）：`inflight_blocks_limit=16384` 卡住 submit_lba_count。**59.6 不是提交粒度，是“一条 4MB = 64 strip 同时在盘 + 顺序 LBA + 在飞 18.8”；Mooncake 32MiB 窗口 + 随机 key 区域到不了。** 12 轮 failed=0；A1 漂移 −0.48% |
 | E3-AR | 2026-11-05 | NoF 在飞窗口/workers（limit 32/64/128MiB、workers 4/8/16）+ 独立随机 vs 顺序 LBA（d 1/1） | 已关闭（客户端旋钮全无效） | 7 臂×3×60 s、21 轮 failed=0：A0 5.640 GiB/s / transfer mean 306.2 / d avg 692.5；B1 64MiB、B2 128MiB、B3 w8、B4 w16、B5 qpair8、A1 回切全部 ≤1.4%（漂移 0.15%）。env 生效（lane_limit 16384→32768→65536，lanes 4→8），target bdev 121.53→121.96（+0.35%）不动。**机制：4MB Get 全落一条 lane，但 lane 90% 空闲（client Get 深度=1，中间 336 µs copy），窗口只用 ~10%，所以调窗口/worker/lane 都没用。** 随机 LBA 只解释尾部（bdev mean 61.42→74.34，P99 150.3→317.8；均值仍只有 121.5 的 61%）。Mooncake 在飞 11.2 < perf 16.8/20.2 却更慢，再次否定“排队深度”。**客户端旋钮全部关掉；转 target 侧（qpair 深度/raid0/注册区碎片）** |
 | E3-AS | 2026-11-05 | Mooncake 仅 SSD→node4 DRAM（host-only，无 H2D copy/无 GDR）vs 裸 SPDK 同形态：验证 Mooncake 是否始终比裸 SPDK 慢（P50/mean/P90/P99 同口径） | 已关闭（mean/肩部成立） | host-only 干净：effective_path=nof/host、staged_bytes=0、cuda_io=0；11.10 GiB/s（d 5.640 的 1.97×）。d 的 transfer 段就是 host-only（P50 223.7 / mean 303.4；d 端到端 692.5 vs host-only 351.8，差 ~340 µs = copy）。同统计量 vs 裸 4MB QD1（207.0/225.9/232.5/540.9）：transfer P50 +8.1%、mean +34.3%、P90 +107.4%、P99 +2.7%；vs 4MB 随机：mean +27.6%、P90 +34.8%、P99 −5.9%。**差异在肩部（P90），不是最尾；Mooncake P99 反而更低；同事 B 的“始终更慢”在 mean/肩部成立。** 随机 64K×QD4×4 因 URMA queue_depth（16 在飞 + 4 qpair）失败；宽肩根因未定位（客户端栈 vs NoF 编排） |
-| E3-AT | 2026-11-05 | master 位置对 query 的影响：node4 本地 vs node2 远程（d 1/1，A0/B/A1） | 待执行 | — |
+| E3-AT | 2026-11-05 | master 位置对 query 的影响：node4 本地 vs node2 远程（d 1/1，A0/B/A1） | 已关闭（保持 node4） | A0 node4：query P50 47.0/mean 47.6；B node2：102.0/104.3；A1 回 node4：46.7/47.3。**B vs A1（同窗口）query +55.3/+57.0 µs（+118.4%/+120.5%）；d total +56.7/+57.8（≈1:1）；throughput −7.0%；read_us +0.1%（数据面不变）；A1 回切 <3%。** 分布整体平移（B P99−P50 仅 13.8 µs）→ 跨节点 RPC 固定成本，不是抖动。**master 保持 node4。** 坑：换 master 后 NoF 段需重注册 + 重灌 key，否则 prefill 报 no NoF segments |
 
 ---
 
@@ -2916,7 +2916,7 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 
 ---
 
-# E3-AT（待执行 · 2026-11-05）· master 位置对 query 的影响：node4 本地 vs node2 远程
+# E3-AT（已关闭 · 2026-11-05）· master 位置对 query 的影响：node4 本地 vs node2 远程
 
 > 背景：当前 master 在 node4（与 client 同机），query 39–42 µs；用户要验证 master 放 node2 时 query 是否明显更高。
 > **只动控制面/master；不改数据面、不改代码、不跑全量/8MB/stripe/交付表。**
@@ -2957,3 +2957,24 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 - **只动 master/控制面**；SPDK target、数据面、strip、交付表都不动。
 - 如果 node2 上 master 与 target/mooncake_client 冲突（端口/资源），先回报。
 - query 是控制面，不与 transfer 的 40 gap 混算；本轮只回答"master 位置是否影响 query"。
+
+## 回执（2026-11-05，已收）
+
+**结论：master 位置对 query 有显著影响，1:1 传导到 d total；数据面不受影响；保持 master 在 node4。**
+
+| 臂 | master | query P50 | query mean | query P90/P99 | read mean（数据面） | total P50 / mean | GiB/s |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| A0 | node4 本地 | 47.0 | 47.6 | 54.0/64.0 | 711.8 | 682.0/760.9 | 5.18 |
+| B | node2 远程 | **102.0** | **104.3** | 107.7/115.8 | 745.3 | 740.7/851.2 | 4.64 |
+| A1 | 回 node4 | 46.7 | 47.3 | 53.3/59.3 | 744.5 | 684.0/793.4 | 4.99 |
+
+- **query 差**：B vs A1（同窗口）P50 **+118.4%**、mean **+120.5%**，绝对 **+55.3/+57.0 µs**；P90 +102%、P99 +95%；分布整体平移（B 的 P99−P50 仅 13.8 µs）→ **跨节点 RPC 固定成本，不是抖动**。
+- **d total 同量级**：total_mean +57.8、total_P50 +56.7，与 query 对齐（≈1:1）；吞吐 4.99→4.64（−7.0%），正好是 query 占 total 的 12.3%。
+- **数据面不变**：read_us mean 745.3 vs 744.5（+0.1%），P50 635.7 vs 633.7。
+- **回切**：A1 query P50 47.0→46.7（−0.6%）、mean 47.6→47.3、total_P50 +0.3%；漂移 <3%。
+- 证据：3 臂×3×60 s，9 轮 failed=0、全部 status=read_ok；query 取 `get_into_breakdown` 的 query_us（sample 0.1，6.9–8.1k/轮）；恒等式 query+read≈total（残余 ~1.6 µs）。逐轮 query P50/mean：A0 47.0/48.3、49.0/48.8、45.0/45.8；B 104.0/106.2、105.0/107.1、97.0/99.5；A1 46.0/46.8、48.0/48.6、46.0/46.5；两次 10 s 冒烟同结论。
+- **换 master 的坑（留证）**：新 master 是空库，首轮 prefill 报 `NoF replicas requested but no NoF segments were found`；补
+  `nof_register nqn.2026-01.io.spdk:urma-gpu-test 1 141.61.84.247 4421 URMA 141.61.84.247:50056 38407493406160` 后 prefill 成功（100 key/400 MB）；失败日志 `AT_B_FAIL1_AT_prefill_B.log.gz`。
+- node2 无 Mooncake 构建树 → 从 node4 拷 `mooncake_master` + `libasio.so`（同 md5）；node2 master role=leader/state=serving/service_ready=true。
+- 风险：node4 load A0 ~17 → A1 28.9；A1 read_us 711.8→744.5、吞吐 −3.8%；**主对比用同窗口 B vs A1**（数据面 +0.1%），A0 只验回切；total_mean A0→A1 +4.3% 归因 load，不归因 master。B 臂 prefill 重写 400 MB（verify=false），A1 read_us 与 B 一致。两个 master 同时在线（node4 的 master 兼 metadata 必须留）；无 HA/etcd，客户端只连指定；node4 master 未重启。sample 0.1，query P99 ±2 µs；P50 轮间离散 A0 8.5%/B 7.8%/A1 4.3%，57 µs 远超离散。
+- 产物：R44_20261105_master_query（25 文件/1.9 MB）；node2 master 已 kill（pid 3150965，50056/9006 无监听；仅剩 yin 的 50063 master）；node4 master 未重启（pid 1315494，50056/8086/9006，key 500，nof 1677721600）；SPDK target 未动；零源码 diff。
