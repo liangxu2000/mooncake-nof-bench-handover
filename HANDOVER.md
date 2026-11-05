@@ -2906,6 +2906,7 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 - 同统计量对照（裸 4MB QD1×1 核顺序：P50 207.0 / mean 225.9 / P90 232.5 / P99 540.9 / 17.29 GiB/s）：transfer P50 +8.1%、mean +34.3%、P90 +107.4%、P99 +2.7%，吞吐 −35.8%；端到端 P50 +33.3%、mean +55.7%、P90 +130.2%、P99 +12.6%。
 - 对 4MB 随机臂（196.0/237.8/357.8/590.0）：mean +27.6%、P90 +34.8%、P99 −5.9%。
 - 差异在肩部，不是最尾：Mooncake “224→482→555” 宽肩；裸 “207→232→541” 窄肩 + 4 ms 台阶；Mooncake P99 反而更低。按判据 mean >5% 且 P50 只差 8.1% → **成立**。
+- **口径修正**：4 MB QD1 是单发，不是 Mooncake 的 64K×4qpair 同形态；同形态裸 64K×QD4×4 为 **139.3/218.0/224.0/4067.8**（P99 4 ms 是工具/链路台阶）；Mooncake vs 同形态 **P50 +60.6%、mean +39.2%、P90 +139%**，P99 更低；结论仍成立且更强。
 - 测量学：`spdk_nvme_perf -LL` 百分位是每核 4 组；已用 `as_perf_parse.py` 合并 4 个 per-core 直方图再给全局 P50/P90/P99/P99.9。
 - 裸臂：4M QD1 seq 207.0/232.5/540.9/225.9/17.29；4M QD1 rand 196.0/357.8/590.0/237.8/16.48；64K QD4×4 seq 139.3/224.0/4067.8/218.0/4.47；64K QD1×4 rand 25.0/102.2/225.6/58.5/4.17。随机 64K×QD4×4 三轮 rc=1（capsule SEND post failed status=12, queue_depth=3/127 + starting I/O failed -5）→ 无效；10 s 探针证明 QD1×4、QD4×1 可用，是“16 在飞 + 4 qpair”的 URMA 发送队列限制。
 - 未做：随机 64K×QD4×4（需 target qpair/transport 或调小在飞）；Mooncake Get 并发 >1；宽肩根因未定位（客户端栈 vs NoF 编排）——本轮已排除 copy 与 LBA 随机性。
