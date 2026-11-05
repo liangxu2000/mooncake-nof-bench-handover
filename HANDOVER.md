@@ -108,6 +108,7 @@
 | E3-AQ | 2026-11-04 | 第五次测试续：NoF submit chunk 128K vs 1M/4M（d 1/1，env only），验证能否把 bdev 121.6 推向 59.6 | 已关闭（chunk 无效） | 128K→1M/4M：吞吐 −0.45%/−0.48%，transfer mean +0.69%/+0.76%，d avg +0.46%/+0.49%，target bdev 121.96→123.26（反而差 1.1%），全部 ≤3% → 停。env 已生效（blocks_per_chunk 256→8192，提交 32→1 次），但 target 形态不变（blocks_top 仍 128,N；在飞 strip 11.27→11.42）：`inflight_blocks_limit=16384` 卡住 submit_lba_count。**59.6 不是提交粒度，是“一条 4MB = 64 strip 同时在盘 + 顺序 LBA + 在飞 18.8”；Mooncake 32MiB 窗口 + 随机 key 区域到不了。** 12 轮 failed=0；A1 漂移 −0.48% |
 | E3-AR | 2026-11-05 | NoF 在飞窗口/workers（limit 32/64/128MiB、workers 4/8/16）+ 独立随机 vs 顺序 LBA（d 1/1） | 已关闭（客户端旋钮全无效） | 7 臂×3×60 s、21 轮 failed=0：A0 5.640 GiB/s / transfer mean 306.2 / d avg 692.5；B1 64MiB、B2 128MiB、B3 w8、B4 w16、B5 qpair8、A1 回切全部 ≤1.4%（漂移 0.15%）。env 生效（lane_limit 16384→32768→65536，lanes 4→8），target bdev 121.53→121.96（+0.35%）不动。**机制：4MB Get 全落一条 lane，但 lane 90% 空闲（client Get 深度=1，中间 336 µs copy），窗口只用 ~10%，所以调窗口/worker/lane 都没用。** 随机 LBA 只解释尾部（bdev mean 61.42→74.34，P99 150.3→317.8；均值仍只有 121.5 的 61%）。Mooncake 在飞 11.2 < perf 16.8/20.2 却更慢，再次否定“排队深度”。**客户端旋钮全部关掉；转 target 侧（qpair 深度/raid0/注册区碎片）** |
 | E3-AS | 2026-11-05 | Mooncake 仅 SSD→node4 DRAM（host-only，无 H2D copy/无 GDR）vs 裸 SPDK 同形态：验证 Mooncake 是否始终比裸 SPDK 慢（P50/mean/P90/P99 同口径） | 已关闭（mean/肩部成立） | host-only 干净：effective_path=nof/host、staged_bytes=0、cuda_io=0；11.10 GiB/s（d 5.640 的 1.97×）。d 的 transfer 段就是 host-only（P50 223.7 / mean 303.4；d 端到端 692.5 vs host-only 351.8，差 ~340 µs = copy）。同统计量 vs 裸 4MB QD1（207.0/225.9/232.5/540.9）：transfer P50 +8.1%、mean +34.3%、P90 +107.4%、P99 +2.7%；vs 4MB 随机：mean +27.6%、P90 +34.8%、P99 −5.9%。**差异在肩部（P90），不是最尾；Mooncake P99 反而更低；同事 B 的“始终更慢”在 mean/肩部成立。** 随机 64K×QD4×4 因 URMA queue_depth（16 在飞 + 4 qpair）失败；宽肩根因未定位（客户端栈 vs NoF 编排） |
+| E3-AT | 2026-11-05 | master 位置对 query 的影响：node4 本地 vs node2 远程（d 1/1，A0/B/A1） | 待执行 | — |
 
 ---
 
@@ -2912,3 +2913,47 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 - 未做：随机 64K×QD4×4（需 target qpair/transport 或调小在飞）；Mooncake Get 并发 >1；宽肩根因未定位（客户端栈 vs NoF 编排）——本轮已排除 copy 与 LBA 随机性。
 - 风险：随机臂不稳定（4M 随机 P50 离散 17.6%、mean 11.8%）；Mooncake 分位桶宽 P50 4.096 µs / P90 8.19 µs；裸侧合并直方图更细；裸 -c 0xf vs Mooncake numactl node0 绑定不完全一致；node4 load 15.3–17.8。
 - 产物：R43_20261105_d_hostonly（29 文件/1.13 MB）；target 未动；零源码 diff。
+
+---
+
+# E3-AT（待执行 · 2026-11-05）· master 位置对 query 的影响：node4 本地 vs node2 远程
+
+> 背景：当前 master 在 node4（与 client 同机），query 39–42 µs；用户要验证 master 放 node2 时 query 是否明显更高。
+> **只动控制面/master；不改数据面、不改代码、不跑全量/8MB/stripe/交付表。**
+
+## 一、基线 A0（master 在 node4）
+
+- 当前 master `141.61.84.151:50056`、metadata `141.61.84.151:8086`；d 1/1 Plan A，3×60 s。
+- 记录：query P50/mean/P90/P99、d total avg/P50/mean、GiB/s、failed；确认 query ≈39–42 µs。
+- 记录 master 启动命令、PID、metadata URL、client/target 的 master 配置；备份配置。
+
+## 二、B（master 在 node2）
+
+- 在 node2（141.61.84.247）启动 master，使用同一 metadata URL；端口 50056（或可用端口）；
+- 客户端 `mc_ports.env` 的 `MC_MASTER_ADDR` 指向 node2；target 的 `mooncake_client` 如需指向 master，同步；
+  **SPDK target/数据面不动**；
+- 先 10 s d 1/1 冒烟，failed=0 且 query 正常；再 3×60 s。
+- 记录：query P50/mean/P90/P99、d total、GiB/s、failed；与 A0 同窗口/负载。
+- 如果 master 在 node2 启动失败（metadata/端口/资源/依赖），**停止并回报**；不改数据面。
+
+## 三、回切 A1（master 回 node4）
+
+- master 回 node4；恢复 `MC_MASTER_ADDR`/target 配置；3×60 s A1；确认 query/d total 回到 A0（漂移 <3%）。
+- 记录回切命令、PID、配置文件。
+
+## 四、判据
+
+- **query 差值**：node2 vs node4，P50/mean；remote 明显更高（>10%）→ 记录幅度；差异小（<3%）→ query 对 master 位置不敏感。
+- **d total 差值**应与 query 差值同量级；transfer/copy 不应变化（数据面不受 master 影响）。
+- 任何 failed>0 / master 启动失败 / 数据面异常 → 停、回切；不改交付表。
+
+## 五、产物
+
+- `R44_20261105_master_query/`：meta、summary、A0/B/A1 的 query/d total、master 启动/回切命令、PID、env、日志、md5。
+- 无源码 diff；配置备份与回退命令必留。
+
+## 六、注意
+
+- **只动 master/控制面**；SPDK target、数据面、strip、交付表都不动。
+- 如果 node2 上 master 与 target/mooncake_client 冲突（端口/资源），先回报。
+- query 是控制面，不与 transfer 的 40 gap 混算；本轮只回答"master 位置是否影响 query"。
