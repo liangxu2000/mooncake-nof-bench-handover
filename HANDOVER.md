@@ -104,10 +104,10 @@
 | E3-AM | 2026-11-04 | 第五次测试：d 合并段 60 µs 归因（SPDK e12b7cb + stage buffer 两段打点 + 旧/新 A/B） | 已关闭（替代方案，不作为最终证据；转 E3-AN） | 60 拆开并闭合（SSD 141.3 + URMA 43.8 + outside 39.6 + 1.4 = 226.1）；**修正口径：URMA+outside=83.4≈模型 86.4，gap 实为 SSD 段尾部/排队**；per-sub-IO bdev P50 75≈模型 80、P90 260/P99 303；e12b7cb 未拉取（node4 无 DNS），用本地 spdk_v2@5e727fd 的 stdout stage trace 替代；**用户不接受该替代作为最终证据；必须拉 e12b7cb + 独立测量（E3-AN）**；旧/新 SPDK A/B 未做；trace 开销 −2.3% 吞吐/+4.5% mean |
 | E3-AN | 2026-11-04 | 第五次测试修正：e12b7cb 必须拉取 + 独立测量 d 合并段（SSD→node4 DRAM）；保留 E3-AM trace 拆解作对照 | 已完成（独立测量转 E3-AO） | e12b7cb 经 Windows 代理拉取 + scp，tarball sha256 f98de24f…；node4 编译 nvmf_tgt e7440ae0…（旧 104014a9…），node2 已部署；七子阶段：bdev 79.4/261.9/314.8（mean 121.60），bdev 软件开销 0.47 µs（0.4%），99.6% 是异步等待，enomem 恒 0；**单轮 P50 −7.5% 已撤回；3 轮 old/new 205.7/208.7（+1.5%），等价**；独立测量见 E3-AO |
 | E3-AO | 2026-11-04 | 第五次测试收口：独立测量 4MB SSD→node4 DRAM（不经过 Mooncake）+ 3 轮旧/新 A/B + trace 对照 | 已关闭 | 独立测试 P50 181.7 / P90 198.8 / P99 364.4 / avg 193.6 µs，20.2 GiB/s，failed=0；trace SSD+URMA 185.1 vs 181.7（−1.8%）→ 拆分准确；226−outside 39.6=186.5 vs 181.7（2.6%）→ 226 与独立的差是客户端 outside；clean 3 轮 old/new 205.7/208.7 vs 独立 181.7 = 24–27 µs（含 QD=1 vs 在飞 26 的并发），**60 不是全在 SSD**；新/旧等价；QD 扫描失败 |
-| E3-AP | 2026-11-04 | 第五次测试收口：把 +24 µs 分成 A（target 设备队列/并发）还是 B（Mooncake 客户端/拆分） | 已关闭 | **判定 A：target 设备队列/形态；B 否**。同形态独立复现：64K×QD4×4qpair avg 212.12 vs Mooncake clean 205.7（+3.1%），target bdev mean 130.94 vs 121.60（+7.7%），不经过 Mooncake 同量级；独立 4MB QD=1 bdev mean 59.3，只有 Mooncake 121.6 的一半。target 软件栈 submit 0.41–0.46 µs、恒等式 0、enomem 0。**+24 = 形态 +30.4 − Mooncake 编排 6.4**；60 = 15.3 + 30.4 − 6.4 + 20.3 ≈ 59.6。提速方向是减少 64 KiB 单发/提高批式与顺序性，不是客户端软件。** |
+| E3-AP | 2026-11-04 | 第五次测试收口：把 +24 µs 分成 A（target 设备队列/并发）还是 B（Mooncake 客户端/拆分） | 已关闭（2026-11-05 单位更正） | **判定 A：target 设备队列/形态；B 否**。**单位更正**：64K×QD4×4qpair 的 avg 212.12 是**单 64K I/O**，不是 4MB；按吞吐 4.47 GiB/s 折算 4MB ~875 vs Mooncake 205.7 → **Mooncake 反而快**；撤回“同形态 212.12 vs 205.7（+3.1%）”。同单位证据：target bdev mean **130.94 vs 121.60（+7.7%，per-64K strip）**——独立形态 bdev 更差，B 否；独立 4MB QD=1 bdev 59.3。target 软件栈 submit 0.41–0.46 µs、恒等式 0、enomem 0。**+24 = Mooncake 205.7 − 独立 4MB 181.7（64K×4qpair 形态）；60 = 15.3 + 24.0 + 20.3 ≈ 59.6；原“+30.4 − 6.4”作废。** 提速方向是减少 64 KiB 单发/提高批式与顺序性，不是客户端软件。 |
 | E3-AQ | 2026-11-04 | 第五次测试续：NoF submit chunk 128K vs 1M/4M（d 1/1，env only），验证能否把 bdev 121.6 推向 59.6 | 已关闭（chunk 无效） | 128K→1M/4M：吞吐 −0.45%/−0.48%，transfer mean +0.69%/+0.76%，d avg +0.46%/+0.49%，target bdev 121.96→123.26（反而差 1.1%），全部 ≤3% → 停。env 已生效（blocks_per_chunk 256→8192，提交 32→1 次），但 target 形态不变（blocks_top 仍 128,N；在飞 strip 11.27→11.42）：`inflight_blocks_limit=16384` 卡住 submit_lba_count。**59.6 不是提交粒度，是“一条 4MB = 64 strip 同时在盘 + 顺序 LBA + 在飞 18.8”；Mooncake 32MiB 窗口 + 随机 key 区域到不了。** 12 轮 failed=0；A1 漂移 −0.48% |
 | E3-AR | 2026-11-05 | NoF 在飞窗口/workers（limit 32/64/128MiB、workers 4/8/16）+ 独立随机 vs 顺序 LBA（d 1/1） | 已关闭（客户端旋钮全无效） | 7 臂×3×60 s、21 轮 failed=0：A0 5.640 GiB/s / transfer mean 306.2 / d avg 692.5；B1 64MiB、B2 128MiB、B3 w8、B4 w16、B5 qpair8、A1 回切全部 ≤1.4%（漂移 0.15%）。env 生效（lane_limit 16384→32768→65536，lanes 4→8），target bdev 121.53→121.96（+0.35%）不动。**机制：4MB Get 全落一条 lane，但 lane 90% 空闲（client Get 深度=1，中间 336 µs copy），窗口只用 ~10%，所以调窗口/worker/lane 都没用。** 随机 LBA 只解释尾部（bdev mean 61.42→74.34，P99 150.3→317.8；均值仍只有 121.5 的 61%）。Mooncake 在飞 11.2 < perf 16.8/20.2 却更慢，再次否定“排队深度”。**客户端旋钮全部关掉；转 target 侧（qpair 深度/raid0/注册区碎片）** |
-| E3-AS | 2026-11-05 | Mooncake 仅 SSD→node4 DRAM（host-only，无 H2D copy/无 GDR）vs 裸 SPDK 同形态：验证 Mooncake 是否始终比裸 SPDK 慢（P50/mean/P90/P99 同口径） | 已关闭（mean/肩部成立） | host-only 干净：effective_path=nof/host、staged_bytes=0、cuda_io=0；11.10 GiB/s（d 5.640 的 1.97×）。d 的 transfer 段就是 host-only（P50 223.7 / mean 303.4；d 端到端 692.5 vs host-only 351.8，差 ~340 µs = copy）。同统计量 vs 裸 4MB QD1（207.0/225.9/232.5/540.9）：transfer P50 +8.1%、mean +34.3%、P90 +107.4%、P99 +2.7%；vs 4MB 随机：mean +27.6%、P90 +34.8%、P99 −5.9%。**差异在肩部（P90），不是最尾；Mooncake P99 反而更低；同事 B 的“始终更慢”在 mean/肩部成立。** 随机 64K×QD4×4 因 URMA queue_depth（16 在飞 + 4 qpair）失败；宽肩根因未定位（客户端栈 vs NoF 编排） |
+| E3-AS | 2026-11-05 | Mooncake 仅 SSD→node4 DRAM（host-only，无 H2D copy/无 GDR）vs 裸 SPDK 同形态：验证 Mooncake 是否始终比裸 SPDK 慢（P50/mean/P90/P99 同口径） | 已关闭（vs 4MB 单发成立；同形态不成立） | host-only 干净：effective_path=nof/host、staged_bytes=0、cuda_io=0；11.10 GiB/s（d 5.640 的 1.97×）。d 的 transfer 段就是 host-only（P50 223.7 / mean 303.4；d 端到端 692.5 vs host-only 351.8，差 ~340 µs = copy）。同统计量 vs 裸 4MB QD1（207.0/225.9/232.5/540.9）：transfer P50 +8.1%、mean +34.3%、P90 +107.4%、P99 +2.7%；vs 4MB 随机：mean +27.6%、P90 +34.8%、P99 −5.9%。**单位更正：裸 64K×QD4×4 的 139.3/218.0 是单 64K I/O；按 4.47 GiB/s 折算 4MB ~875 vs Mooncake ~352 → Mooncake 快 2.5×；撤回“同形态 +60.6%/+39.2%”。** **差异在肩部（P90），不是最尾；Mooncake P99 反而更低；同事 B 的“更慢”只在 vs 裸 4MB 单发时成立，“始终更慢”不成立。** 随机 64K×QD4×4 因 URMA queue_depth（16 在飞 + 4 qpair）失败；宽肩根因未定位（客户端栈 vs NoF 编排） |
 | E3-AT | 2026-11-05 | master 位置对 query 的影响：node4 本地 vs node2 远程（d 1/1，A0/B/A1） | 已关闭（保持 node4） | A0 node4：query P50 47.0/mean 47.6；B node2：102.0/104.3；A1 回 node4：46.7/47.3。**B vs A1（同窗口）query +55.3/+57.0 µs（+118.4%/+120.5%）；d total +56.7/+57.8（≈1:1）；throughput −7.0%；read_us +0.1%（数据面不变）；A1 回切 <3%。** 分布整体平移（B P99−P50 仅 13.8 µs）→ 跨节点 RPC 固定成本，不是抖动。**master 保持 node4。** 坑：换 master 后 NoF 段需重注册 + 重灌 key，否则 prefill 报 no NoF segments |
 
 ---
@@ -2749,10 +2749,10 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 
 **判定：A（target 设备队列/形态）；B（Mooncake 客户端/拆分）被否。**
 
-- 决定性证据（同形态独立复现）：`spdk_nvme_perf` 64 KiB × QD4 × 4 qpair，整段 avg 212.12 vs Mooncake clean 205.7（+3.1%）；target bdev mean 130.94 vs 121.60（+7.7%）——完全不经过 Mooncake 就跑出同量级。
+- 决定性证据（同单位 bdev）：`spdk_nvme_perf` 64 KiB × QD4 × 4 qpair 的 target bdev mean 130.94 vs Mooncake 121.60（+7.7%，per-64K strip）——独立形态 bdev 反而更差 → 不是客户端软件慢。**单位更正（2026-11-05）**：该臂 avg 212.12 是**单 64K I/O**，不是 4MB；4.47 GiB/s 折算 4MB ~875 vs Mooncake 205.7 → Mooncake 反而快；“212.12 vs 205.7（+3.1%）同形态”撤回。
 - 实验 1（主）：独立 4MB QD=1，target 每 64 KiB strip 的 bdev mean 59.29/59.81/59.75（P50 ~60、P99 ~97），只有 Mooncake 121.60 的一半；单位核对：blocks_top 全 (128,N)=一个 64 KiB strip，4 MB=64 条，Mooncake 1 条/IO，同单位。
 - target 软件栈：submit_call 0.41–0.46 µs；exec_to_read 0.04、read_to_submit 0.01、callback_to_complete 0.02；恒等式 0.000 µs；enomem=0。
-- **60 干净分解更新**：独立 4MB QD=1 181.7 → 独立 64K QD4×4 212.1 = **+30.4 形态**；clean Mooncake 205.7 − 212.1 = **−6.4（Mooncake 编排略优）**；原 +24 = 30.4 − 6.4；再加 15.3（4MB QD=1 路径 vs 模型）和 20.3（trace/批次）≈ 59.6。
+- **60 干净分解（2026-11-05 更正）**：15.3（独立 4MB QD=1 181.7 vs 模型 166.4）+ **24.0（clean Mooncake 205.7 − 独立 4MB 181.7，64K×4qpair 形态）** + 20.3（trace/批次）= 59.6。原“+30.4 形态 − 6.4 编排”是把 per-64K 的 212.1 当 per-4MB 用，作废。
 - **方向**：减少 64 KiB 单发、提高单次下发条数/顺序性（推向 4 MB 批式那格 59.6 µs），不是优化客户端软件路径。
 - 更正 §70.5：`-q 4` 在 64 KiB 下可用（3 组 8 s 全 rc=0）；挂死的是 4 MB × QD4 × 4 核。
 - 未做：4 MB×QD4×4 挂死（timeout 75 s，kill -9，rc=137）；未做 `-q 1 -c 0xf`（qpair 数与深度未解耦）；未切控制器队列→盘内队列→NAND；未跑全量/8MB/stripe/交付表。
@@ -2858,9 +2858,9 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 
 # E3-AS（已关闭 · 2026-11-05）· Mooncake 仅 SSD→node4 DRAM vs 裸 SPDK 同形态
 
-> 背景：同事 B 提出“同一链路，Mooncake 可能始终比裸 SPDK 慢”。现有数据：
-> P50 Mooncake 205.7/208.7 vs 裸同形态 avg 212.12（Mooncake 不慢）；
-> **mean Mooncake 289.6/306.2 vs 裸 212.12（Mooncake 更高）**——所以他的点在 mean/tail 上可能成立，需要同统计量、同形态、host-only 的对照。
+> 背景：同事 B 提出“同一链路，Mooncake 可能始终比裸 SPDK 慢”。现有数据（**2026-11-05 单位更正**）：
+> 64K×QD4×4 的 avg **212.12 是单 64K I/O，不是 4MB**，不能与 Mooncake 205.7 相比；按 4.47 GiB/s 折算 4MB ~875，
+> Mooncake 反而快。有效对照只能是 per-4MB：Mooncake vs 裸 4MB 单发 181.7，以及 per-strip bdev。
 > 只做 d 1/1、4MB；不改 Mooncake 源码；不跑全量/8MB/stripe/交付表。
 
 ## 一、Mooncake host-only（主）
@@ -2900,14 +2900,14 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 
 ## 回执（2026-11-05，已收）
 
-**结论：host-only 干净；同事 B 的“Mooncake 始终比裸 SPDK 慢”在 mean/肩部成立，不是纯尾部。**
+**结论：host-only 干净；同事 B 的点只在“vs 裸 4MB 单发”口径成立（mean +34.3%、P90 +107.4%），不是纯尾部；同形态（64K×QD4×4）不成立——按 4MB 折算 Mooncake 反而快 2.5×。**
 
 - host-only：3 轮 effective_path=nof/host、staged_bytes=0、cuda_io=0、host_io 5.44–5.51M；11.10 GiB/s（d 5.640 的 1.97×）；failed=0；离散 ≤1.5%。
 - d 的 transfer 段就是 host-only：host-only transfer P50 223.7 / mean 303.4；与 E3-AQ A0（206.0/289.6）、E3-AR A0（mean 306.2）同量级；d 端到端 692.5 vs host-only 351.8，差 ~340 µs = H2D copy。
 - 同统计量对照（裸 4MB QD1×1 核顺序：P50 207.0 / mean 225.9 / P90 232.5 / P99 540.9 / 17.29 GiB/s）：transfer P50 +8.1%、mean +34.3%、P90 +107.4%、P99 +2.7%，吞吐 −35.8%；端到端 P50 +33.3%、mean +55.7%、P90 +130.2%、P99 +12.6%。
 - 对 4MB 随机臂（196.0/237.8/357.8/590.0）：mean +27.6%、P90 +34.8%、P99 −5.9%。
-- 差异在肩部，不是最尾：Mooncake “224→482→555” 宽肩；裸 “207→232→541” 窄肩 + 4 ms 台阶；Mooncake P99 反而更低。按判据 mean >5% 且 P50 只差 8.1% → **成立**。
-- **口径修正**：4 MB QD1 是单发，不是 Mooncake 的 64K×4qpair 同形态；同形态裸 64K×QD4×4 为 **139.3/218.0/224.0/4067.8**（P99 4 ms 是工具/链路台阶）；Mooncake vs 同形态 **P50 +60.6%、mean +39.2%、P90 +139%**，P99 更低；结论仍成立且更强。
+- 差异在肩部，不是最尾：Mooncake “224→482→555” 宽肩；裸 “207→232→541” 窄肩 + 4 ms 台阶；Mooncake P99 反而更低。按判据 mean >5% 且 P50 只差 8.1% → **只对“裸 4MB 单发”这个口径成立**。
+- **单位更正（2026-11-05，重要）**：4 MB QD1 是单发，不是 Mooncake 的 64K×4qpair 同形态；裸 **64K×QD4×4 的 139.3/218.0 是单 64K I/O**，按吞吐 4.47 GiB/s 折算 4MB 约 **875**；Mooncake host-only 按 11.10 GiB/s 折算 4MB 约 **352** → **Mooncake 快 2.5×**。之前“同形态 P50 +60.6%、mean +39.2%”是单位混比，**撤回**；**“Mooncake 始终更慢”不成立**。
 - 测量学：`spdk_nvme_perf -LL` 百分位是每核 4 组；已用 `as_perf_parse.py` 合并 4 个 per-core 直方图再给全局 P50/P90/P99/P99.9。
 - 裸臂：4M QD1 seq 207.0/232.5/540.9/225.9/17.29；4M QD1 rand 196.0/357.8/590.0/237.8/16.48；64K QD4×4 seq 139.3/224.0/4067.8/218.0/4.47；64K QD1×4 rand 25.0/102.2/225.6/58.5/4.17。随机 64K×QD4×4 三轮 rc=1（capsule SEND post failed status=12, queue_depth=3/127 + starting I/O failed -5）→ 无效；10 s 探针证明 QD1×4、QD4×1 可用，是“16 在飞 + 4 qpair”的 URMA 发送队列限制。
 - 未做：随机 64K×QD4×4（需 target qpair/transport 或调小在飞）；Mooncake Get 并发 >1；宽肩根因未定位（客户端栈 vs NoF 编排）——本轮已排除 copy 与 LBA 随机性。
