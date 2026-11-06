@@ -109,7 +109,7 @@
 | E3-AR | 2026-11-05 | NoF 在飞窗口/workers（limit 32/64/128MiB、workers 4/8/16）+ 独立随机 vs 顺序 LBA（d 1/1） | 已关闭（客户端旋钮全无效） | 7 臂×3×60 s、21 轮 failed=0：A0 5.640 GiB/s / transfer mean 306.2 / d avg 692.5；B1 64MiB、B2 128MiB、B3 w8、B4 w16、B5 qpair8、A1 回切全部 ≤1.4%（漂移 0.15%）。env 生效（lane_limit 16384→32768→65536，lanes 4→8），target bdev 121.53→121.96（+0.35%）不动。**机制：4MB Get 全落一条 lane，但 lane 90% 空闲（client Get 深度=1，中间 336 µs copy），窗口只用 ~10%，所以调窗口/worker/lane 都没用。** 随机 LBA 只解释尾部（bdev mean 61.42→74.34，P99 150.3→317.8；均值仍只有 121.5 的 61%）。Mooncake 在飞 11.2 < perf 16.8/20.2 却更慢，再次否定“排队深度”。**客户端旋钮全部关掉；转 target 侧（qpair 深度/raid0/注册区碎片）** |
 | E3-AS | 2026-11-05 | Mooncake 仅 SSD→node4 DRAM（host-only，无 H2D copy/无 GDR）vs 裸 SPDK 同形态：验证 Mooncake 是否始终比裸 SPDK 慢（P50/mean/P90/P99 同口径） | 已关闭（vs 4MB 单发成立；同形态不成立） | host-only 干净：effective_path=nof/host、staged_bytes=0、cuda_io=0；11.10 GiB/s（d 5.640 的 1.97×）。d 的 transfer 段就是 host-only（P50 223.7 / mean 303.4；d 端到端 692.5 vs host-only 351.8，差 ~340 µs = copy）。同统计量 vs 裸 4MB QD1（207.0/225.9/232.5/540.9）：transfer P50 +8.1%、mean +34.3%、P90 +107.4%、P99 +2.7%；vs 4MB 随机：mean +27.6%、P90 +34.8%、P99 −5.9%。**单位更正：裸 64K×QD4×4 的 139.3/218.0 是单 64K I/O；按 4.47 GiB/s 折算 4MB ~875 vs Mooncake ~352 → Mooncake 快 2.5×；撤回“同形态 +60.6%/+39.2%”。** **差异在肩部（P90），不是最尾；Mooncake P99 反而更低；同事 B 的“更慢”只在 vs 裸 4MB 单发时成立，“始终更慢”不成立。** 随机 64K×QD4×4 因 URMA queue_depth（16 在飞 + 4 qpair）失败；宽肩根因未定位（客户端栈 vs NoF 编排） |
 | E3-AT | 2026-11-05 | master 位置对 query 的影响：node4 本地 vs node2 远程（d 1/1，A0/B/A1） | 已关闭（保持 node4） | A0 node4：query P50 47.0/mean 47.6；B node2：102.0/104.3；A1 回 node4：46.7/47.3。**B vs A1（同窗口）query +55.3/+57.0 µs（+118.4%/+120.5%）；d total +56.7/+57.8（≈1:1）；throughput −7.0%；read_us +0.1%（数据面不变）；A1 回切 <3%。** 分布整体平移（B P99−P50 仅 13.8 µs）→ 跨节点 RPC 固定成本，不是抖动。**master 保持 node4。** 坑：换 master 后 NoF 段需重注册 + 重灌 key，否则 prefill 报 no NoF segments |
-| E3-AU | 2026-11-05 | 独占窗口 query 复测：master 在 node2，a–d 四场景 query（2026-11-06 更新：去掉 a/b clean/trace） | 待执行 | 先确认 node2/node4 无他人负载；master 切 node2，node4 远程 query；a/b/c/d × 1/1，sample 0.1，各 3×60 s；只测 query/transfer/total，不测 clean/trace；结束后保持 master node2，保留回 node4 的命令 |
+| E3-AU | 2026-11-05 | 独占窗口 query 复测：master 在 node2，a–d 四场景 query（2026-11-06 更新：去掉 a/b clean/trace） | 已关闭（2026-11-06，回执已收） | master node2、node4 远程 query；a/b/c/d query P50 **92.7/93.3/100.0/109.3**，mean **95.2/96.3/105.8/110.4**；NoF 源（c/d）vs 内存源（a/b）**P50 +11.65 µs（+12.53%）/ mean +12.35（+12.90%）**，越过 10% → 源相关；但主力是 d（d vs a/b +17.9%/+17.2%），c 只 +7~8%（记录级）；b vs a +0.65%/+1.16% → staging 不影响 query；P99 +8.09% < P50 +12.53% → 平移非尾部。**限制：非独占窗口**（node4 who=20、5 个他人 mooncake_master、2 client；node2 who=18），组内 spread a 11.87%/b 10.71%/c 0%/d 20.12%；机制未验证。**当前 master=node2**（pid 224956，50056/9006），node4 master 1315494 保留 metadata；产物 R45_20261106_query_master。 |
 
 ---
 
@@ -3047,3 +3047,24 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 - 表：场景 | query P50 | query mean | query P90/P99 | transfer mean | total P50/mean | GiB/s | failed。
 - 结论回答：内存源（a/b）与 NoF 源（c/d）的 query 是否有差别；d 与 E3-AT 的 102 µs 是否同量级。
 - 未做/失败项、风险与偏差、产物路径单列；回执第一行写“当前 master=node2”。
+
+## 回执（2026-11-06，已收）
+
+**当前 master=node2。四场景 query（master node2，node4 远程，4MB 1/1，sample 0.1，3×60 s）：**
+
+| 场景 | 源 | query P50 | query mean | query P90 | query P99 | read P50/mean | total P50/mean | GiB/s | failed |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| a | 内存+GDR | 92.7 | 95.2 | 99.0 | 108.3 | 323.3/323.4 | 417.3/419.7 | 9.46 | 0 |
+| b | 内存+staging | 93.3 | 96.3 | 99.7 | 115.3 | 453.3/460.2 | 550.3/557.6 | 7.08 | 0 |
+| c | NoF+GDR | 100.0 | 105.8 | 107.3 | 117.0 | 375.0/431.9 | 482.3/539.1 | 7.39 | 0 |
+| d | NoF+staging | 109.3 | 110.4 | 116.7 | 124.7 | 570.0/675.4 | 684.0/787.2 | 5.00 | 0 |
+
+- **内存源（a/b）vs NoF 源（c/d）**：P50 93.00 vs 104.65（**+11.65 µs / +12.53%**）；mean 95.75 vs 108.10（**+12.35 / +12.90%**）；P90 +12.73%、P99 +8.09% → 整体平移，不是尾部。
+- **主力是 d**：d vs a/b P50 +17.91%/+17.15%；d 最差一轮 101.0 仍高于 a/b 最好一轮 97.0；**c 只 +7~8%**，与 a/b 组内波动（10.7–11.9%）同量级，只算记录级。
+- **staging 不影响 query**：b vs a +0.65%/+1.16%；staging 只影响 read（323→453）与吞吐（9.46→7.08）。
+- 跨窗口参照：master node4 时四场景 query 约 35.3–37.7；挪 node2 后 +57.0/+58.0/+64.3/+71.6 µs；E3-AT d 102.0/104.3 vs 本轮 109.3/110.4（+7.2%/+5.8%）。
+- **重要限制**：本轮**不是独占窗口**——node4 who=20、load 15.15–15.97，另有 5 个他人 mooncake_master（50363/50974/50494/51052/50063）、2 个 client、nvmf_tgt reactor_2；node2 who=18、load 11.47–11.27。组内 spread：a 11.87%/b 10.71%/c 0%/d 20.12%，**d 的 17~18% 按 ±10% 看，c 的 7~8% 只算记录级**。
+- **机制未验证**：无 master 侧 profile，不能区分“NoF 查表路径本身更贵”与“NoF 段元数据更大”；c 与 d 的 9% 差无解释。
+- 未做：master=node4 的同窗口 A/B；a/b clean/trace（本版 spec 删除）；8MB/stripe/多线程/多 client/长稳。
+- 结束状态：master=node2（pid 224956，50056/9006），client 226145（:50156→node2），node4 master 1315494 保留 metadata（8086）；回 node4 一键命令在 R45 `meta.md` §9。
+- 产物：`测试相关资料/第五次测试结果/R45_20261106_query_master/`（49 文件/5.53 MB）；零源码 diff、未改交付表、target 未动。
