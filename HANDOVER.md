@@ -1,6 +1,6 @@
 # 交接文件（单向：开发指挥 Agent → 测试执行 Agent）
 
-- 最后更新：2026-11-05
+- 最后更新：2026-11-06
 - 仓库：`https://github.com/liangxu2000/mooncake-nof-bench-handover`（public，可匿名拉取，无需凭据）
 - 首次：`git clone https://github.com/liangxu2000/mooncake-nof-bench-handover.git`
 - 之后每轮：`cd mooncake-nof-bench-handover && git pull`
@@ -16,6 +16,37 @@
 5. **资料与回执格式**：只给结论、≤20 行原始输出片段、`文件:行号`、diff；脚本/env 摘录 ≤15 行，CSV 只给相关行（≤5 行）。
 6. 若出现代码补丁，放在 `patches/`，一律 `git diff`（必要时 `-U1` 压缩上下文）+ `base64 -w0` 单行 + patch/b64 两份 md5；落地前先 `git apply --check`。
 7. **代码保管（长期）**：只有**要进 Mooncake git 仓的源码改动**（C++/头文件/构建配置等）必须把最小 diff + `base64 -w0` + sha256 回传给开发指挥 Agent；由外部本地归档、核对并在最终阶段统一提交 git。**仓外测试脚本/harness（如 `mc_bench_point.sh`）不需要回传 diff**；只需在 R*/meta.md 记录 env、命令、脚本 md5，供复现即可，因为它们不会进 git。测试 Agent 继续只 pull、不 push；回执不传整文件、构建产物或日志。
+
+## 独占判定规范（所有测试任务通用，2026-11-06）
+
+**原则：不看进程是否存在，看测量窗口内是否消耗资源。`who` 只证明登录会话，`ps` 只证明进程存在，二者都不能证明“在跑”。**
+
+### 跑前（每个臂前 10 s）
+
+- 列出可疑进程：`mooncake_master`、`mooncake_client`、`nvmf_tgt`（排除我们自己的 PID）。
+- 对每个可疑 PID 记录基线：`cat /proc/<pid>/stat` 的 utime/stime（第 14/15 字段），10 s 后再读一次；
+  `CPU% = Δticks / (CLK_TCK × Δt) × 100`，`getconf CLK_TCK` 取 HZ。
+- 记录我们绑定的 NUMA 节点空闲率：`mpstat -P ALL 1 10`（或等价），以及 `top -b -n1 -o %CPU | head -20`。
+- 记录 load、`who`（只作参考，不作独占依据）。
+
+### 跑中（每轮 60 s）
+
+- 用 `pidstat -p <bench_pid>,<可疑PIDs> 1 60`（或 /proc 前后差值）记录每个可疑进程的平均 CPU%；
+- 记录 bench 自己的 CPU、每轮 query/transfer/total、吞吐、failed；
+- target 侧记录 reactor 对应核的 CPU 与 bdev 时延；若 target 时延随别人 CPU 波动，标“有干扰”。
+
+### 判据（必须写进 meta.md）
+
+- **独占/无干扰**：其他 mooncake/spdk 进程平均 CPU **<1% 单核**；绑定节点空闲率稳定；每轮关键指标 spread **≤3%**；load 主要由我们自己的进程贡献。
+- **未确认/边缘**：其他进程 **1–5% 单核**，或 spread **3–10%** → 标“未确认独占”，数字只作方向。
+- **有干扰**：其他进程 **>5% 单核**，或 spread **>10% 且与别人 CPU 时间正相关** → 标“有干扰”，不进正式结论/交付表。
+- 进程存在但 60 s 内 utime/stime 几乎不涨 → **空转，不影响独占**。
+- 若 `pidstat` 不可用，至少给两次 `top`/`mpstat` 采样 + 每轮 spread，并明确写“未确认”。
+
+### 报告格式
+
+- `meta.md` 必写：可疑 PID 列表、跑前/跑后 utime+stime 增量、平均 CPU%、绑核空闲率、每轮 spread、判定（独占/未确认/有干扰）。
+- 回执第一行写独占判定，不能只写 `who`/load/进程列表。
 
 ## 结果与交付约定（从 E3-B 起生效）
 
