@@ -109,7 +109,7 @@
 | E3-AR | 2026-11-05 | NoF 在飞窗口/workers（limit 32/64/128MiB、workers 4/8/16）+ 独立随机 vs 顺序 LBA（d 1/1） | 已关闭（客户端旋钮全无效） | 7 臂×3×60 s、21 轮 failed=0：A0 5.640 GiB/s / transfer mean 306.2 / d avg 692.5；B1 64MiB、B2 128MiB、B3 w8、B4 w16、B5 qpair8、A1 回切全部 ≤1.4%（漂移 0.15%）。env 生效（lane_limit 16384→32768→65536，lanes 4→8），target bdev 121.53→121.96（+0.35%）不动。**机制：4MB Get 全落一条 lane，但 lane 90% 空闲（client Get 深度=1，中间 336 µs copy），窗口只用 ~10%，所以调窗口/worker/lane 都没用。** 随机 LBA 只解释尾部（bdev mean 61.42→74.34，P99 150.3→317.8；均值仍只有 121.5 的 61%）。Mooncake 在飞 11.2 < perf 16.8/20.2 却更慢，再次否定“排队深度”。**客户端旋钮全部关掉；转 target 侧（qpair 深度/raid0/注册区碎片）** |
 | E3-AS | 2026-11-05 | Mooncake 仅 SSD→node4 DRAM（host-only，无 H2D copy/无 GDR）vs 裸 SPDK 同形态：验证 Mooncake 是否始终比裸 SPDK 慢（P50/mean/P90/P99 同口径） | 已关闭（vs 4MB 单发成立；同形态不成立） | host-only 干净：effective_path=nof/host、staged_bytes=0、cuda_io=0；11.10 GiB/s（d 5.640 的 1.97×）。d 的 transfer 段就是 host-only（P50 223.7 / mean 303.4；d 端到端 692.5 vs host-only 351.8，差 ~340 µs = copy）。同统计量 vs 裸 4MB QD1（207.0/225.9/232.5/540.9）：transfer P50 +8.1%、mean +34.3%、P90 +107.4%、P99 +2.7%；vs 4MB 随机：mean +27.6%、P90 +34.8%、P99 −5.9%。**单位更正：裸 64K×QD4×4 的 139.3/218.0 是单 64K I/O；按 4.47 GiB/s 折算 4MB ~875 vs Mooncake ~352 → Mooncake 快 2.5×；撤回“同形态 +60.6%/+39.2%”。** **差异在肩部（P90），不是最尾；Mooncake P99 反而更低；同事 B 的“更慢”只在 vs 裸 4MB 单发时成立，“始终更慢”不成立。** 随机 64K×QD4×4 因 URMA queue_depth（16 在飞 + 4 qpair）失败；宽肩根因未定位（客户端栈 vs NoF 编排） |
 | E3-AT | 2026-11-05 | master 位置对 query 的影响：node4 本地 vs node2 远程（d 1/1，A0/B/A1） | 已关闭（保持 node4） | A0 node4：query P50 47.0/mean 47.6；B node2：102.0/104.3；A1 回 node4：46.7/47.3。**B vs A1（同窗口）query +55.3/+57.0 µs（+118.4%/+120.5%）；d total +56.7/+57.8（≈1:1）；throughput −7.0%；read_us +0.1%（数据面不变）；A1 回切 <3%。** 分布整体平移（B P99−P50 仅 13.8 µs）→ 跨节点 RPC 固定成本，不是抖动。**master 保持 node4。** 坑：换 master 后 NoF 段需重注册 + 重灌 key，否则 prefill 报 no NoF segments |
-| E3-AU | 2026-11-05 | 独占窗口 query 复测：a–d 在 master node4；a/b 在 master node2（clean + trace） | 待执行 | 先确认 node2/node4 无他人负载；Part A：a/b/c/d × 1/1，master node4，sample 0.1，3×60 s，取 query；Part B：master 切 node2，a/b × 1/1，clean（sample 0，diag 0）与 trace（sample 1，UB_WORKER_DIAG 1）各 3×60 s；对比 query 的源类型差异与本地/远程差异；结束后默认保持 master node2（符合远端查询要求），保留回 node4 的命令 |
+| E3-AU | 2026-11-05 | 独占窗口 query 复测：master 在 node2，a–d 四场景 query（2026-11-06 更新：去掉 a/b clean/trace） | 待执行 | 先确认 node2/node4 无他人负载；master 切 node2，node4 远程 query；a/b/c/d × 1/1，sample 0.1，各 3×60 s；只测 query/transfer/total，不测 clean/trace；结束后保持 master node2，保留回 node4 的命令 |
 
 ---
 
@@ -2982,14 +2982,13 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 
 ---
 
-# E3-AU（待执行 · 2026-11-05）· 独占窗口 query 复测 + master 在 node2 的 a/b clean/trace
+# E3-AU（待执行 · 2026-11-05，2026-11-06 更新）· 独占窗口四场景 query 复测（master 在 node2）
 
 > 背景：E3-AT 已证明 master 位置对 d 的 query 有 +55~57 µs、≈1:1 传导到 total；但当时可能有他人共用机器，
-> 且只测了 d。本轮用户已独占机器，要三件事：
-> ① 重测 c/d 的 query；② 补测 a/b 的 query，看内存源（a/b）与 NoF 源（c/d）是否有差别；
-> ③ 把 master 放到 node2、node4 远程 query，测 a/b 的 clean 与 trace 拆解——实际要求是客户端与 master 分离，
-> 目前只有两个节点，master 暂与存储同机（node2）。
-> **只做 4MB、1/1、Plan A；不改数据面、不改代码、不跑全量/8MB/stripe/交付表。**
+> 且只测了 d。本轮用户已独占机器，要求：**master 放 node2，node4 远程 query，测 a/b/c/d 四个场景的 query**；
+> 原 Part 3（a/b clean + trace）取消，不测。实际要求是客户端与 master 分离，目前只有两个节点，
+> master 暂与存储同机（node2）。
+> **只做 4MB、1/1、Plan A；只测 query/transfer/total；不改数据面、不改代码、不跑全量/8MB/stripe/交付表。**
 
 ## 零、起跑前：确认独占与基线
 
@@ -3003,42 +3002,36 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
   `MC_NOF_SUBMIT_CHUNK_BYTES=131072`、`numactl --cpunodebind=0`、`--verify=false`。
 - 每场景 prefill 的 key 数/字节数保持一致并记录（E3-AT 是 100 key/400 MB）；换 master 后必须重新 prefill。
 
-## 一、Part A：master 在 node4，四场景 query 复测
-
-- a/b/c/d × 1/1，各 3×60 s；master 保持 node4，不切换。
-- 打点：**轻采样 query 臂**，`MC_HIFREQ_LOG_SAMPLE_RATE=0.1`、`MC_UB_WORKER_DIAG=0`（与 E3-AT 同口径）；
-  先各做 10 s 冒烟，确认 `get_into_breakdown` 里有 `query_us`，且 a/b 也能取到；
-  若 a/b 没有 query_us，回报实际字段/开关，不要用 total 减 transfer 硬凑。
-- 记录：query P50/mean/P90/P99、read/transfer mean、total P50/mean、GiB/s、failed、sample 数、逐轮值。
-- 目的：c/d 是独占窗口复测；a/b 是首次 query；四场景同 master、同窗口可直接比较源类型差异。
-- **不要**在本部分切换 master；不要开 `MC_UB_WORKER_DIAG`（避免把 query 臂变成重打点）。
-
-## 二、Part B：master 在 node2，a/b clean + trace
+## 一、master 切到 node2（只动控制面）
 
 - 按 E3-AT 的 B 臂流程在 node2 启动 master：同一 metadata URL（node4:8086）、端口 50056；
   node2 无构建树时从 node4 拷 `mooncake_master` + `libasio.so`（记录 md5）；node4 的 master 保留（兼 metadata）。
 - 客户端 `MC_MASTER_ADDR` 指向 node2:50056；target/mooncake_client 如需指向 master 同步改；**SPDK target/数据面不动**。
-- 新 master 空库：a/b 的 memory/UB segment 需重新注册；若 prefill 报 no segment/no replica，
+- 新 master 空库：a/b 的 memory/UB segment、c/d 的 NoF segment 需重新注册；若 prefill 报 no segment/no replica，
   按现有脚本补注册（参考 E3-AT 的 `nof_register`，a/b 用对应的 UB/memory 注册入口）；补不上就停、回报。
-- 先 10 s 冒烟 a/b，failed=0 且 query 正常后再正式跑。
-- **B1 clean**：`MC_HIFREQ_LOG_SAMPLE_RATE` 不设/0、`MC_UB_WORKER_DIAG=0`；a/b 各 3×60 s。
-- **B2 trace**：`MC_HIFREQ_LOG_SAMPLE_RATE=1`、`MC_UB_WORKER_DIAG=1`；a/b 各 3×60 s。
-- 先做一次 10 s clean vs trace 开销对照：total 偏移 ≤3% 才继续；>3% 记录并把 trace 只用于拆解，总量用 clean。
-- 记录：query、transfer、total、GiB/s、failed，以及 trace 的 UB 分段拆解（submit/wait/worker queue/post/CQ 等现有字段）。
-- 目的：master 远程时 a/b 的 query 是多少；clean 与 trace 的总量/拆解是否一致。
+- 先 10 s 冒烟 d，failed=0 且 query 正常后再正式跑；记录 master PID、端口、配置。
+
+## 二、四场景 query（master node2，node4 远程）
+
+- a/b/c/d × 1/1，各 3×60 s；master 保持在 node2，不切换。
+- 打点：**轻采样 query 臂**，`MC_HIFREQ_LOG_SAMPLE_RATE=0.1`、`MC_UB_WORKER_DIAG=0`（与 E3-AT 同口径）；
+  先各做 10 s 冒烟，确认 `get_into_breakdown` 里有 `query_us`，且 a/b 也能取到；
+  若 a/b 没有 query_us，回报实际字段/开关，不要用 total 减 transfer 硬凑。
+- 记录：query P50/mean/P90/P99、read/transfer mean、total P50/mean、GiB/s、failed、sample 数、逐轮值。
+- 目的：四场景同 master、同窗口，比较内存源（a/b）与 NoF 源（c/d）的 query 差异；d 可与 E3-AT 的 node2 102 µs 对照（历史值，不同窗口）。
+- **不要**开 `MC_UB_WORKER_DIAG`，不测 clean/trace 拆解。
 
 ## 三、判据
 
-- **源类型差异（Part A，master node4）**：a/b（内存源）vs c/d（NoF 源）query P50/mean；
+- **源类型差异（master node2）**：a/b（内存源）vs c/d（NoF 源）query P50/mean；
   ≤3% 视为无差别，3–10% 记录，>10% 视为源相关；先看 P50，再看 mean，分位只作形状参考。
-- **本地 vs 远程（a/b）**：Part B（node2）vs Part A（node4）query 差；预期与 d 的 +55~57 µs 同量级；
-  若明显不同，记录绝对值和百分比。数据面 read/transfer 不应随 master 位置变化（参考 E3-AT d +0.1%）。
-- **clean vs trace（a/b）**：total 偏移 ≤3% 为合格；超过则总量以 clean 为准，trace 只用于拆解。
-- 任一臂 failed>0 / STUCK / master 启动失败 / prefill 失败且补注册无效 → 停该臂，回切/保留现场并回报。
+- **历史对照**：d 在 node2 的 query 可对照 E3-AT 的 102 µs，但不同窗口，不作严格判据；若差很多，记录。
+- **数据面 sanity**：read/transfer 不应出现异常变化；本轮只回答“四场景 query 在远端 master 下是多少/有没有源类型差别”。
+- 任一臂 failed>0 / STUCK / master 启动失败 / prefill 失败且补注册无效 → 停该臂，保留现场并回报。
 
 ## 四、结束状态
 
-- **默认保持 master 在 node2、客户端指向 node2**（符合“客户端与 master 分离、远程 query”的要求）；
+- **保持 master 在 node2、客户端指向 node2**（符合“客户端与 master 分离、远程 query”的要求）；
   记录 node2 master PID、端口、配置；node4 master 继续作为 metadata 服务保留。
 - 同时留一份**回 node4 的一键命令/配置备份**（改回 `MC_MASTER_ADDR=141.61.84.151:50056`、node2 master 可 kill）；
   并在回执里写清当前实际状态，避免后续测试误用。
@@ -3046,12 +3039,11 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 
 ## 五、产物
 
-- `R45_20261105_query_master/`：meta、summary、Part A/B 逐臂 CSV、query/transfer/total 分位、逐轮日志、master 起停命令与 PID、`mc_ports.env` 备份、脚本 md5、node load/进程快照。
-- 结论一页：先写“四场景 query 是否有差别”，再写“a/b 远程 vs 本地”，最后写“clean vs trace”。
+- `R45_20261106_query_master/`：meta、summary、四场景逐臂 CSV、query/transfer/total 分位、逐轮日志、master 起停命令与 PID、`mc_ports.env` 备份、脚本 md5、node load/进程快照。
+- 结论一页：写“master 在 node2 时，a/b/c/d 的 query 各是多少、源类型是否有差别”。
 
 ## 六、回执要求
 
-- Part A 表：场景 | query P50 | query mean | query P90/P99 | transfer mean | total P50/mean | GiB/s | failed。
-- Part B 表：场景 | 臂(clean/trace) | query P50/mean | transfer mean | total P50/mean | GiB/s | failed。
-- 结论按上面三条判据逐条回答；未做/失败项、风险与偏差、产物路径单列。
-- 若最终保持 master node2，回执第一行明确写“当前 master=node2”；否则写“已回 node4”。
+- 表：场景 | query P50 | query mean | query P90/P99 | transfer mean | total P50/mean | GiB/s | failed。
+- 结论回答：内存源（a/b）与 NoF 源（c/d）的 query 是否有差别；d 与 E3-AT 的 102 µs 是否同量级。
+- 未做/失败项、风险与偏差、产物路径单列；回执第一行写“当前 master=node2”。
