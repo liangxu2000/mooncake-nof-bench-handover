@@ -141,6 +141,8 @@
 | E3-AS | 2026-11-05 | Mooncake 仅 SSD→node4 DRAM（host-only，无 H2D copy/无 GDR）vs 裸 SPDK 同形态：验证 Mooncake 是否始终比裸 SPDK 慢（P50/mean/P90/P99 同口径） | 已关闭（vs 4MB 单发成立；同形态不成立） | host-only 干净：effective_path=nof/host、staged_bytes=0、cuda_io=0；11.10 GiB/s（d 5.640 的 1.97×）。d 的 transfer 段就是 host-only（P50 223.7 / mean 303.4；d 端到端 692.5 vs host-only 351.8，差 ~340 µs = copy）。同统计量 vs 裸 4MB QD1（207.0/225.9/232.5/540.9）：transfer P50 +8.1%、mean +34.3%、P90 +107.4%、P99 +2.7%；vs 4MB 随机：mean +27.6%、P90 +34.8%、P99 −5.9%。**单位更正：裸 64K×QD4×4 的 139.3/218.0 是单 64K I/O；按 4.47 GiB/s 折算 4MB ~875 vs Mooncake ~352 → Mooncake 快 2.5×；撤回“同形态 +60.6%/+39.2%”。** **差异在肩部（P90），不是最尾；Mooncake P99 反而更低；同事 B 的“更慢”只在 vs 裸 4MB 单发时成立，“始终更慢”不成立。** 随机 64K×QD4×4 因 URMA queue_depth（16 在飞 + 4 qpair）失败；宽肩根因未定位（客户端栈 vs NoF 编排） |
 | E3-AT | 2026-11-05 | master 位置对 query 的影响：node4 本地 vs node2 远程（d 1/1，A0/B/A1） | 已关闭（保持 node4） | A0 node4：query P50 47.0/mean 47.6；B node2：102.0/104.3；A1 回 node4：46.7/47.3。**B vs A1（同窗口）query +55.3/+57.0 µs（+118.4%/+120.5%）；d total +56.7/+57.8（≈1:1）；throughput −7.0%；read_us +0.1%（数据面不变）；A1 回切 <3%。** 分布整体平移（B P99−P50 仅 13.8 µs）→ 跨节点 RPC 固定成本，不是抖动。**master 保持 node4。** 坑：换 master 后 NoF 段需重注册 + 重灌 key，否则 prefill 报 no NoF segments |
 | E3-AU | 2026-11-05 | 独占窗口 query 复测：master 在 node2，a–d 四场景 query（2026-11-06 更新：去掉 a/b clean/trace） | 已关闭（2026-11-06，回执已收） | master node2、node4 远程 query；a/b/c/d query P50 **92.7/93.3/100.0/109.3**，mean **95.2/96.3/105.8/110.4**；NoF 源（c/d）vs 内存源（a/b）**P50 +11.65 µs（+12.53%）/ mean +12.35（+12.90%）**，越过 10% → 源相关；但主力是 d（d vs a/b +17.9%/+17.2%），c 只 +7~8%（记录级）；b vs a +0.65%/+1.16% → staging 不影响 query；P99 +8.09% < P50 +12.53% → 平移非尾部。**限制：非独占窗口**（node4 who=20、5 个他人 mooncake_master、2 client；node2 who=18），组内 spread a 11.87%/b 10.71%/c 0%/d 20.12%；机制未验证。**当前 master=node2**（pid 224956，50056/9006），node4 master 1315494 保留 metadata；产物 R45_20261106_query_master。 |
+| E3-AV | 2026-11-06 | host-only vs d 同窗口受控 A/B：d 场景只切 `gpu_mode=staging` vs `host`，同 build/keys/load + target bdev trace | 待执行 | 先核对 E3-AS host-only 的实际启动方式与 `transfer` 打点边界；同窗口交替 A/B 各 3×60 s；比较 transfer 与 per-strip bdev 分布，分辨客户端路径/测量边界 vs 队列/节奏；解决 15–18 µs 未定因；不改 master/数据面/交付表 |
+| E3-AW | 2026-11-06 | query 独占复测 + query-only/target-idle 对照：a–d query，c/d 只 prefill 不读 | 待执行 | 按独占规范记录 `/proc` CPU 时间增量；Part A 四场景 3×60 s（d 可加 2 轮）；Part B c/d full 3×60 s、c/d query-only 3×60 s、a/b query-only 3×60 s；分辨 NoF 元数据查表成本 vs master/target 同机竞争；query-only 需现有开关或最小 harness，确认 metadata cache |
 
 ---
 
@@ -3099,3 +3101,94 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 - 未做：master=node4 的同窗口 A/B；a/b clean/trace（本版 spec 删除）；8MB/stripe/多线程/多 client/长稳。
 - 结束状态：master=node2（pid 224956，50056/9006），client 226145（:50156→node2），node4 master 1315494 保留 metadata（8086）；回 node4 一键命令在 R45 `meta.md` §9。
 - 产物：`测试相关资料/第五次测试结果/R45_20261106_query_master/`（49 文件/5.53 MB）；零源码 diff、未改交付表、target 未动。
+
+---
+
+# E3-AV（待执行 · 2026-11-06）· host-only vs d 同窗口受控 A/B
+
+> 背景：E3-AS 的 host-only P50 **223.7** vs d transfer **205.7/208.7**，差 15–18 µs，原因未定（节奏？host-only 代码路径/打点边界？窗口？）。
+> 用户明确：这个点影响 Mooncake 独立测试的准确性，必须查/测，不许猜。**本任务只解决这 15–18 µs，不改 master/数据面/交付表。**
+
+## 零、前提：先查代码，再确认独占
+
+- **不换 master**：当前 master=node2、target=node2、client=node4；本任务只动 d 的数据面路径。
+- 先核对 **E3-AS host-only 的实际启动方式**：是现有 bench 的 `gpu_mode=host`，还是单独 harness；把命令/env 写进回执。
+  若是 `gpu_mode=host`，本轮按 `gpu_mode=staging` vs `host` 做 A/B；若 E3-AS 用别的 harness，沿用同一 harness，但必须保证**两臂只差 copy/缓冲路径**。
+- 读代码并写清测量边界：`mooncake-store/benchmarks/stress_cluster_bench.cpp` 的 `gpu_mode`（约 383–405 行）与 reader/`get_into_breakdown`；
+  `mooncake-store/src/client_service.cpp` 的 `Query`/`Get`（约 1036 行）；确认两臂的 `transfer` 到底包含哪些阶段、缓冲/分配是否不同。回执给 `文件:行号`。
+- 按 HANDOVER《独占判定规范》确认窗口：其他 mooncake/spdk 进程 **<1% 单核**、绑核空闲率稳定、每轮 spread ≤3%；
+  不满足就标“未确认/有干扰”，不要硬跑 3×60 s。
+
+## 一、A/B 臂
+
+- d 场景（SSD 源 + NoF target），4MB、1/1、Plan A；**只切 `gpu_mode`**：
+  - **A（d 正常）**：`gpu_mode=staging`（有 H2D copy）
+  - **B（host-only）**：`gpu_mode=host`（无 copy）
+- 同 build、同 keys（同一批 prefill，不重新生成）、同 target、同 client、同窗口；**交替 A/B/A/B/A/B**，各 3×60 s，不要先跑完 A 再跑 B。
+- 每臂记录：transfer P50/mean/P90/P99、read、total、GiB/s、failed；node load/CPU；如能取到，记录每次 Get 的间隔/在飞量（用来判断节奏）。
+- **target bdev trace**：两臂同开 e12b7cb 的 target stage buffer（E3-AN 配置：`SPDK_URMA_STAGE_TRACE_US=1` + `TARGET_SINK=buffer` + `_PATH` + `_CAPACITY`），
+  解析 per-64K strip 的 bdev P50/mean/P90/P99；两臂必须同 trace 配置，trace 只用于 bdev 分布比较，不拿 trace-on 的 transfer 与 clean 混比。
+- 不跑 a/b/c；不跑全量；不改源码；target 不重建。
+
+## 二、判据
+
+- **bdev 分布相同、transfer 不同** → 客户端路径/测量边界（host buffer vs staging、`transfer` 打点边界、query/alloc 是否混入）。
+- **bdev 分布也不同（host-only 更高/更低）** → target 队列/节奏（host-only 无 copy，Get 更密）；结合 Get 间隔/在飞量解释。
+- **两者都相同** → 之前的 15–18 µs 是窗口/负载漂移。
+- 不允许用“环境合理偏差”带过；每个结论必须对应到 bdev 或代码路径证据。
+- failed>0 / STUCK / 独占不满足 → 停该臂并回报。
+
+## 三、产物
+
+- `R46_20261106_hostonly_ab/`：meta（独占证据、代码路径 `文件:行号`）、summary、A/B 逐轮日志、bdev 解析、CPU/load 快照。
+- 无源码 diff；master 保持 node2；target 不动；不改交付表。
+
+---
+
+# E3-AW（待执行 · 2026-11-06）· query 独占复测 + query-only/target-idle 对照
+
+> 背景：E3-AU 未确认独占；NoF 源 +12.5% 主要被 d 拉动，c 只 +7~8%；且 master 与 c/d 的 target 同机在 node2，
+> 分不清「NoF 元数据查表贵」还是「master 与 target 抢 node2」。本任务：①真正独占复测四场景 query；②c/d 只 prefill、不读数据，测 query-only，对照 target 在跑。
+
+## 零、前提
+
+- master 保持 node2；target node2；client node4；不换 master。
+- 严格按《独占判定规范》：可疑 PID 的 `/proc/<pid>/stat` utime/stime 前后增量、绑核空闲率、每轮 spread；**<1% 单核才算独占**；不满足就停并回报，不要用非独占数字下结论。
+- **query-only 实现**：先查现有 bench 是否有 metadata-only 模式；没有就写最小 harness 调 `ClientService::Query`
+  （`mooncake-store/include/client_service.h:143`；不要走 `Get` 的数据传输），或用最小 bench 补一个 `--query_only` 开关。
+  若改仓库源码，按约定回传最小 diff；不改 Mooncake 核心语义。
+- **先确认 client 有没有 metadata cache**：如果重复查同一个 key 命中缓存，query-only 测的不是 master；要用足够大的 key 集合/轮换，并在回执说明。
+- c/d 先 prefill 4MB keys；query-only 阶段 target 保持进程在、但不发起数据读。
+
+## 一、Part A：四场景 query 独占复测
+
+- a/b/c/d × 1/1，各 3×60 s；master node2；`MC_HIFREQ_LOG_SAMPLE_RATE=0.1`、`MC_UB_WORKER_DIAG=0`。
+- 尽量按 a,b,c,d 循环 3 轮（降低时间漂移）；若场景切换成本高，可按块跑，但记录时间顺序和 load。
+- 若 d 的 query P50 轮间 spread >10%，**补 2×60 s d**；仍 >10% 就标“d 未收敛”，不强行给精确值。
+- 记录：query P50/mean/P90/P99、read/transfer、total、GiB/s、failed、逐轮值、sample 数。
+
+## 二、Part B：query-only vs target 在跑
+
+- **B1 c/d 正常读**：**直接复用 Part A 的 c/d 正常读臂**（同窗口、同 keys、target 在跑），不重复跑；
+  若 Part A 与 B2 的时间间隔超过 15 min 或 load 明显变化，补 1×60 s c/d 正常读作衔接。
+- **B2 c/d query-only**：只 prefill，不读数据；3×60 s（target 空闲）；记录 query。
+- **B3 a/b query-only**：3×60 s（内存源对照，target 不用）；记录 query。
+- 同窗口、同 master、同 keys；记录 node2 target reactor CPU、node2 load、query 采样数。
+- 对比：
+  - **c/d query-only vs a/b query-only** → NoF 元数据查表本身是否更贵；
+  - **c/d 正常读 vs c/d query-only** → target 同机竞争/请求节奏贡献多少；
+  - 若 c/d query-only ≈ a/b、正常读更高 → 主要是同机竞争/节奏；
+  - 若 c/d query-only 已明显高于 a/b → 查表本身贵。
+- 如果 query-only 无法实现（无开关且 harness 做不出来），停 Part B 并回报；不要用 total 减 transfer 代替。
+
+## 三、判据
+
+- **源类型效应成立**：c/d query-only 比 a/b query-only 稳定高 >10%，且 d 轮间 spread ≤10%；否则写成“未定/记录级”。
+- **同机竞争成立**：c/d query-only 接近 a/b，而 c/d 正常读显著更高；差异归 target 在跑。
+- c vs d 的差如果只在正常读出现、query-only 消失 → 是数据面/节奏，不是 master 查表。
+- failed>0/STUCK/独占不满足 → 停并回报。
+
+## 四、产物
+
+- `R47_20261106_query_exclusive/`：meta（独占证据、query-only 实现/代码路径、cache 结论）、summary、逐轮日志、query/read/total 分位、target CPU/load 快照。
+- 无核心源码 diff（如改 bench，最小 diff 单独回传）；master 保持 node2；target/交付表不动。
