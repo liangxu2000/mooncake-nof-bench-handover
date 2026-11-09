@@ -141,8 +141,8 @@
 | E3-AS | 2026-11-05 | Mooncake 仅 SSD→node4 DRAM（host-only，无 H2D copy/无 GDR）vs 裸 SPDK 同形态：验证 Mooncake 是否始终比裸 SPDK 慢（P50/mean/P90/P99 同口径） | 已关闭（vs 4MB 单发成立；同形态不成立） | host-only 干净：effective_path=nof/host、staged_bytes=0、cuda_io=0；11.10 GiB/s（d 5.640 的 1.97×）。d 的 transfer 段就是 host-only（P50 223.7 / mean 303.4；d 端到端 692.5 vs host-only 351.8，差 ~340 µs = copy）。同统计量 vs 裸 4MB QD1（207.0/225.9/232.5/540.9）：transfer P50 +8.1%、mean +34.3%、P90 +107.4%、P99 +2.7%；vs 4MB 随机：mean +27.6%、P90 +34.8%、P99 −5.9%。**单位更正：裸 64K×QD4×4 的 139.3/218.0 是单 64K I/O；按 4.47 GiB/s 折算 4MB ~875 vs Mooncake ~352 → Mooncake 快 2.5×；撤回“同形态 +60.6%/+39.2%”。** **差异在肩部（P90），不是最尾；Mooncake P99 反而更低；同事 B 的“更慢”只在 vs 裸 4MB 单发时成立，“始终更慢”不成立。** 随机 64K×QD4×4 因 URMA queue_depth（16 在飞 + 4 qpair）失败；宽肩根因未定位（客户端栈 vs NoF 编排） |
 | E3-AT | 2026-11-05 | master 位置对 query 的影响：node4 本地 vs node2 远程（d 1/1，A0/B/A1） | 已关闭（保持 node4） | A0 node4：query P50 47.0/mean 47.6；B node2：102.0/104.3；A1 回 node4：46.7/47.3。**B vs A1（同窗口）query +55.3/+57.0 µs（+118.4%/+120.5%）；d total +56.7/+57.8（≈1:1）；throughput −7.0%；read_us +0.1%（数据面不变）；A1 回切 <3%。** 分布整体平移（B P99−P50 仅 13.8 µs）→ 跨节点 RPC 固定成本，不是抖动。**master 保持 node4。** 坑：换 master 后 NoF 段需重注册 + 重灌 key，否则 prefill 报 no NoF segments |
 | E3-AU | 2026-11-05 | 独占窗口 query 复测：master 在 node2，a–d 四场景 query（2026-11-06 更新：去掉 a/b clean/trace） | 已关闭（2026-11-06，回执已收） | master node2、node4 远程 query；a/b/c/d query P50 **92.7/93.3/100.0/109.3**，mean **95.2/96.3/105.8/110.4**；NoF 源（c/d）vs 内存源（a/b）**P50 +11.65 µs（+12.53%）/ mean +12.35（+12.90%）**，越过 10% → 源相关；但主力是 d（d vs a/b +17.9%/+17.2%），c 只 +7~8%（记录级）；b vs a +0.65%/+1.16% → staging 不影响 query；P99 +8.09% < P50 +12.53% → 平移非尾部。**限制：非独占窗口**（node4 who=20、5 个他人 mooncake_master、2 client；node2 who=18），组内 spread a 11.87%/b 10.71%/c 0%/d 20.12%；机制未验证。**当前 master=node2**（pid 224956，50056/9006），node4 master 1315494 保留 metadata；产物 R45_20261106_query_master。 |
-| E3-AV | 2026-11-06 | host-only vs d 同窗口受控 A/B：d 场景只切 `gpu_mode=staging` vs `host`，同 build/keys/load + target bdev trace | 待执行 | 先核对 E3-AS host-only 的实际启动方式与 `transfer` 打点边界；同窗口交替 A/B 各 3×60 s；比较 transfer 与 per-strip bdev 分布，分辨客户端路径/测量边界 vs 队列/节奏；解决 15–18 µs 未定因；不改 master/数据面/交付表 |
-| E3-AW | 2026-11-06 | query 独占复测 + query-only/target-idle 对照：a–d query，c/d 只 prefill 不读 | 待执行 | 按独占规范记录 `/proc` CPU 时间增量；Part A 四场景 3×60 s（d 可加 2 轮）；Part B c/d full 3×60 s、c/d query-only 3×60 s、a/b query-only 3×60 s；分辨 NoF 元数据查表成本 vs master/target 同机竞争；query-only 需现有开关或最小 harness，确认 metadata cache |
+| E3-AV | 2026-11-06 | host-only vs d 同窗口受控 A/B：d 场景只切 `gpu_mode=staging` vs `host`，同 build/keys/load + target bdev trace；**开跑前先把 NoF 端口 4421→4457** | 待执行 | 先改端口 4457（target listener/客户端/master 注册/脚本四处一致，保留 4421 回退）；再核对 E3-AS host-only 的实际启动方式与 `transfer` 打点边界；同窗口交替 A/B 各 3×60 s；比较 transfer 与 per-strip bdev 分布，分辨客户端路径/测量边界 vs 队列/节奏；解决 15–18 µs 未定因；不改 master/交付表 |
+| E3-AW | 2026-11-06 | query 独占复测 + query-only/target-idle 对照：a–d query，c/d 只 prefill 不读；**沿用 E3-AV 后的 4457 端口** | 待执行 | 按独占规范记录 `/proc` CPU 时间增量；Part A 四场景 3×60 s（d 可加 2 轮）；Part B c/d full 3×60 s、c/d query-only 3×60 s、a/b query-only 3×60 s；分辨 NoF 元数据查表成本 vs master/target 同机竞争；query-only 需现有开关或最小 harness，确认 metadata cache；不改回 4421 |
 
 ---
 
@@ -3109,6 +3109,18 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 > 背景：E3-AS 的 host-only P50 **223.7** vs d transfer **205.7/208.7**，差 15–18 µs，原因未定（节奏？host-only 代码路径/打点边界？窗口？）。
 > 用户明确：这个点影响 Mooncake 独立测试的准确性，必须查/测，不许猜。**本任务只解决这 15–18 µs，不改 master/数据面/交付表。**
 
+## 零之前：NoF 端口 4421 → 4457（开跑第一步）
+
+- 目的：4421 容易和他人实例重合；统一改为 **4457**，后续 E3-AV/E3-AW 都用 4457，不要再改回 4421。
+- 四处必须一致：
+  1. target listener：删 4421 listener、加 4457 listener（优先 SPDK RPC 热改；不能热改再按现有脚本重启 target）；
+  2. 客户端：`MC_NOF_PORT=4457`（`mc_ports.env` + 跑测脚本）；
+  3. master 的 NoF 段：`nof_register ... 141.61.84.247 4457 URMA ...`（旧记录不能覆盖就先清再注册）；
+  4. `nof_segments`/配置里带 `141.61.84.247:4421` 的字符串。
+- 改完先 10 s 冒烟：`ss -ltnp | grep 4457` 在听、`nvmf_subsystem_get_listeners` 显示 4457、client failed=0、prefill 成功。
+- 保留 4421 的 add_listener/旧注册命令作回退；在 meta.md 记录改前/改后端口、命令、PID。
+- 若 4457 被占用或改端口失败：停、回报，不要硬切；**不要只改一位**。
+
 ## 零、前提：先查代码，再确认独占
 
 - **不换 master**：当前 master=node2、target=node2、client=node4；本任务只动 d 的数据面路径。
@@ -3153,6 +3165,7 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 ## 零、前提
 
 - master 保持 node2；target node2；client node4；不换 master。
+- **NoF 端口沿用 E3-AV 改好的 4457**；本任务不改回 4421；meta.md 记录当前端口。
 - 严格按《独占判定规范》：可疑 PID 的 `/proc/<pid>/stat` utime/stime 前后增量、绑核空闲率、每轮 spread；**<1% 单核才算独占**；不满足就停并回报，不要用非独占数字下结论。
 - **query-only 实现**：先查现有 bench 是否有 metadata-only 模式；没有就写最小 harness 调 `ClientService::Query`
   （`mooncake-store/include/client_service.h:143`；不要走 `Get` 的数据传输），或用最小 bench 补一个 `--query_only` 开关。
