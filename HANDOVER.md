@@ -159,6 +159,7 @@
 | E3-AV | 2026-11-06 | host-only vs d 同窗口受控 A/B：d 场景只切 `gpu_mode=staging` vs `host`，同 build/keys/load + target bdev trace | 已关闭（2026-11-06，回执已收） | 清理干扰后独占；bdev per-64K staging 122.4 vs host 124.5（+1.7%）、target_us 160.8→161.1（+0.2%）→ **target 无差别**；客户端 total P50 664.0→320.7、read 556→214、吞吐 5.11→9.23 GiB/s，差的是 **staging copy ~343 µs**；节奏 1.83× 未抬高 bdev → 不是排队。**现 build `transfer_data_us` 对 NoF 恒 0，E3-AS 的 d transfer 205.7 无法同口径复现；E3-AS host 223.7/303.4 与本轮 host read 214.3/328.7 同量级。** |
 | E3-AW | 2026-11-06 | query 独占复测 + query-only/target-idle 对照：a–d query，c/d 只 prefill 不读 | 已关闭（2026-11-06，回执已收） | 独占后 Part A q P50 a 96.3/b 98.7/c 101.3/d 105.7，mem vs NoF **+6.15%/+6.61%**（3–10% 记录级，E3-AU 的 +12.5% 被独占窗口修正）；Part B query-only c 92.84/d 97.28/a 98.30/b 94.89，mem vs NoF **−1.59%/+0.61%（≤3%）** → **NoF 查表本身不贵**；正常读−query-only mean：a +2.1/b +7.7/c +10.4/d +11.6 µs → 数据面挤压 query，NoF 更多；机制未细分。**注意：target 在 E3-AU 后被重绑 vfio-pci 并重建，keys 200（E3-AU 100）；Part B 顺序跑、a/b 后跑更快，有漂移。** |
 | E3-AX | 2026-11-06 | 准备：SSD 前36MB慢窗口验证 + 全顺序读参数（大 key 数、跳过慢窗口）；先改端口 4457 | 已关闭（验证/pilot，未跑全量） | 慢窗口真实、6.1×、物理：LBA 0–180MB bdev mean 208.8（P50 202）vs 180MB 后 34.1–35.1（P50 35–36），读两遍不变；key→LBA 单调，skip=45（4MB）/23（8MB）。**但对 d/4MB 吞吐几乎没影响**：100-key 循环 **5.29** vs 120k 不回绕 **5.27 GiB/s（−0.4%）** → 历史 c/d 4MB 数据没有被慢窗口显著污染。**skip45 反而 4.52 GiB/s（−14.5%）**，C 臂 trace 显示慢区移到 180–360MB/360MB–1GB（A 同 LBA 35 µs），疑 480GB 预填后 SLC→TLC 搬迁；C 异常未定性，按“不要猜”停。端口 4457；旧 4421 注册需 nof_unregister（否则 2 段/容量翻倍，且会清 key）。容量 38.41TB；4MB 120k/480GiB、8MB 48k/384GiB；8MB 冒烟 6.20 GiB/s 不回绕。**等用户决定是否重跑/是否先做 settle 验证** |
+| E3-AY | 2026-11-09 | **第六次测试**：4MB a/b clean，大 key 顺序读（240k，60s 不回绕），不跑 8MB/trace | 待执行 | a/b × 1/1、1/16、16/1、16/16；240k keys/937.5GiB；warmup 45、测量从 key0（a/b 不 skip）；先查 memory segment 容量，放不下就停并回报；1/1、16/1 各 3×60s，1/16、16/16 各 2×60s；clean only；结果放 `测试相关资料/第六次测试结果/R49_20261109_4mb_ab_seq/`；端口 4457、master node2、独占；不改交付表/不跑 c/d |
 
 ---
 
@@ -3340,3 +3341,42 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 - `--read_start_key`：`mooncake-store/benchmarks/stress_cluster_bench.cpp` +12 行/2 处，0 时行为不变；备份 `.bak_e3ax`，diff 1595 B / base64 2128 B 在 R48。
 - 同文件还携带 E3-AW 的 `--query_only`（+19/−3）；两者互不影响，但**合并时要一起审阅**。
 - 产物：`R48_20261106_seq_prep/`（53 文件/16.04 MB）；台账 §80；索引 R48。
+
+---
+
+# E3-AY（待执行 · 2026-11-09）· 第六次测试：4MB a/b clean，大 key 顺序读
+
+> 背景：E3-AX 证明慢窗口真实（0–180MB 6.1×），但 d/4MB 100-loop 与 120k 不回绕只差 −0.4%；方法上仍要消除 100-key 回绕。
+> 用户启动第六次测试：**4MB 场景 a、b，clean，不跑 trace/打点，不跑 8MB**；先看大 key/不回绕对内存源的影响。
+> **a/b 是内存源、不经过 SSD，慢窗口不会直接体现；本轮是方法纠正 + 对照，SSD 慢窗口要看后续 c/d。**
+
+## 一、参数
+
+- 4MB、Plan A：`MC_SLICE_SIZE=1048576`、`MC_UB_STAGING_POOL_PIN=1`、1/1 `MC_STORE_UB_POLL_SLEEP_US=0`、其余默认 50；`--local_buffer_size=2G`、`--global_segment_size=0`、`numactl --cpunodebind=0`、`--verify=false`。
+- **keys=240,000（4 MiB × 240k = 937.5 GiB）**；目标 60s 不回绕（a 最高约 12.69 GiB/s → 74s；b 约 11.35 → 83s）。
+- **warmup_keys=45**；a/b **不设 `read_start_key`**，测量从 key0 开始（不跳过；慢窗口是 SSD 专属）。
+- 先查 a/b 的 memory segment 容量/当前占用：能否放 937.5 GiB？
+  - 放不下 → **停，回报最大可放 key 数**，不要静默退回 100 keys；给“降 N 但验证 60s 不回绕 / 缩短 duration / 只跑 c/d”的替代。
+- prefill 一次、同场景复用到 4 个并发点；记录 prefill 吞吐/时间；预填后按需静置到内存/target 稳定。
+- 端口保持 **4457**（4421 已移除）；master 保持 node2；target/数据面不动。
+
+## 二、矩阵（clean）
+
+- a/b × 1/1、1/16、16/1、16/16。
+- 1/1、16/1：各 3×60 s；1/16、16/16：各 2×60 s（老样子）。
+- clean：不开 `MC_HIFREQ_LOG_SAMPLE_RATE`、不开 `MC_UB_WORKER_DIAG`、不开 trace。
+- 每 cell：min/avg/P50/P90/P99/P99.9/P99.99/Pmax、GiB/s、failed；逐轮读 key 数；确认**每轮读 key 数 < 240k、无回绕**（记录首/末 key）。
+- 不跑 trace、不做逐请求打点、不做 query_only、不跑 8MB、不跑 c/d。
+
+## 三、对照与判据
+
+- 旧 R36 4MB a/b 是 100-key 循环口径，只作参考，**不要跨批次相减**。
+- 若 a/b 新值与旧值差 ≤2–3% → 100-key 回绕对内存源无显著影响；差异大 → 记录并分析（工作集/cache/UB 路径）。
+- 任何 cell failed>0 / 回绕 / 容量不足 / 独占不满足 → 停并回报。
+
+## 四、目录与产物
+
+- 测试侧新建：`测试相关资料/第六次测试结果/R49_20261109_4mb_ab_seq/`。
+- 本地对应：`D:\gds性能\第六次测试\`。
+- 产物：meta（容量/预填/独占/端口）、summary.csv、逐轮日志、4MB a/b 四并发表、回绕检查、load/hostsnap、scripts.md5。
+- 不改交付表；无源码 diff；不跑 8MB/c/d；端口不回 4421。
