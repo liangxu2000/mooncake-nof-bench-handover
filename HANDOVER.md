@@ -162,7 +162,7 @@
 | E3-AY | 2026-11-09 | **第六次测试**：4MB c/d clean，大 key 顺序读（200k，60s 不回绕），不跑 8MB/trace | 已完成（回执已收；数据需口径确认） | 20 轮 failed=0、全部不回绕（max 195,104/200k）；吞吐 c 1/1 8.21 / 16/1 12.63 / 1/16 11.34 / 16/16 12.68；d 1/1 5.94 / 16/1 11.39 / 1/16 8.39 / 16/16 11.54 GiB/s；c 全面快于 d（1/1 +38.1%、16/16 +9.9%）；线程扩展好于 batch。**方法学修正：E3-AX arm 脚本漏传 `--num_keys`，A/B/C 实际只读 100/54 key，E3-AX 的 A≈B/C 异常结论作废。** 但 E3-AY 的 d 1/1 5.94 vs R36 旧 5.72 仅 +3.8%、c 8.21 vs 8.36 −1.8%，矩阵级与 R36 基本一致 → **“+15%”是拿 E3-AX A（5.16）当基线的跨窗口结果，不能当慢窗口效应**。偏差：sample=0.1（非真 clean）；d 16/16 长尾 P999 0.88–1.81s；prefill wall 462s vs bench 54.37s 未解释。产物 R49。 |
 | E3-AZ | 2026-11-09 | **只导时延对比**：R36（master node4，100-key）vs R49（master node2，200k），不跑任何 benchmark | 已关闭（回执已收） | 字段确认：per-query 端到端 `get_into`/`batch_get_into` 外侧，不是 read/transfer。**1/1**：ΔP50 c +53.2/d +57.3，但 query +60~63 → 数据面 P50 仅 −6~−7（中位不变）；**非 query avg c −44.8（−10.6%）、d −89.3（−13.8%）；P99 c −110.6（−18%）、d −229.4（−24.1%）** → 平均/尾部变好，中位不变。**16/1**：c P50 +3.7%/P99 0、d P50 −2.3%/P99 −2.6%，基本不变。**1/16**：c/d P50 +1.8%/P99 +2.4~2.6%/avg +2%，两场景同步 +2% 未定。**16/16**：c 逐位不变；d P50 −19.5%/avg −1.0%，但 P99 +12.7%、P999 +60.5%、Pmax +80.4%（尾部恶化）。三变量（方法/master/sample0.1）已分开；1/16、16/16 不能拆 query，标未定。产物 R49_latency_compare.md/.csv/.split.csv。 |
 | E3-BA | 2026-11-09 | **第六次 A/B 补 100-key 臂（缩短版）**：只跑 c/d 1/1，与 R49 200k 同窗口/同采样；200k 不重跑 | 已关闭（回执已收） | 同 master node2、同窗口、sample0.1：**100-key 比 200k 慢**。c：avg 531.02/P50 491.52/P90 622.59/P99 765.96 vs 476.45/475.13/487.42/503.81 → ΔP50 +16.4（+3.4%，噪声内）、ΔP99 +262.2（+52.0%）、Δavg +54.6（+11.5%）。d：771.74/720.89/958.46/1097.73 vs 657.63/663.55/688.13/720.89 → **ΔP50 +57.3（+8.6%，>5% 成立）**、ΔP99 +376.8（+52.3%）、Δavg +114.1（+17.4%）。100-key 回绕 c≈1148×/1113×、d≈780×/776×；key0–99 复用未重写。**推翻 E3-AZ 的“P50 涨全是 query、数据面不变”推断**：同 master 下仅 key 数就让 d P50 +57.3、P99 +52%；E3-AZ 的旧 P50/P99 是反推值，不能再用。 |
-| E3-BB | 2026-11-09 | **只读环境盘点**：在 node1/node3 中找第二组测试环境的 RTX 4090；不跑 benchmark、不改环境 | 待执行 | 只查 **node1、node3**（已知 node4=V100、node2=target 无 GPU）；只读执行 `hostname`/`nvidia-smi -L`/`nvidia-smi --query-gpu=name,memory.total,pci.bus_id`/`lspci`/`lscpu`/`ibv_devinfo`/`lsblk`；确认 4090/4090D 在哪个节点、卡数、PCIe 代宽、NUMA、驱动/CUDA；无访问权限的节点回报；产物 `测试相关资料/第二组测试环境/环境盘点_20261109.md`；不改服务/端口/源码。 |
+| E3-BB | 2026-11-09 | **只读环境盘点**：在 node1/node3 中找第二组测试环境的 RTX 4090；不跑 benchmark、不改环境 | 已关闭（回执已收） | **RTX 4090D 在 node1（141.61.84.245）**，1 卡 24564 MiB、Gen4 x16、NUMA0；**node3（141.61.84.149）无 GPU、11×7TB**，建议 client/GPU=node1 + target=node3。四场景：**b 具备、d 有条件（node3 当 target）、a/c 不具备（node1 无 nvidia_peermem）**。缺口：node1 无 Mooncake build、本机仅 1 块 7TB 非测试盘；node1 他人占用（who=16/load14.43）需授权；URMA `/dev/uburma` 暴露不全（node1 只 udmac0d1e2，node3 只 bonding_dev_0）。零环境变更。产物 `第二组测试环境/环境盘点_20261109.md`。 |
 
 ---
 
@@ -3582,3 +3582,13 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 - 结论只回答：**4090/4090D 在哪个节点、几张卡、是否具备跑 Mooncake 四场景的条件**；不猜。
 - 本地对应：`D:\gds性能\第二组测试环境\`。
 - 不改端口/target/master；不跑 benchmark；无源码 diff。
+
+## 回执（2026-11-09，已收）
+
+- **RTX 4090D 在 node1 = 141.61.84.245**：1 张，24564 MiB，`0000:27:00.0`，驱动 575.64.05，CC 8.9，BAR1 256 MiB；PCIe Gen4 x16 满宽（LnkSta 2.5GT/s 是 ASPM 空闲降频）；NUMA0，CPU 亲和 0–83；308 核/2261 GB。
+- **node3 = 141.61.84.149**：无 GPU；11×7TB + 1×2.9TB 系统盘；有 SPDK nvmf_tgt/target_nvme_takeover.sh；`/dev/uburma` 只暴露 bonding_dev_0。
+- 建议组合：**client/GPU=node1（4090D） + target=node3（11×7TB）**，与第一组对称。
+- 四场景：**b 具备、d 有条件（node3 target）、a/c 不具备（node1 无 nvidia_peermem）**。node1 本机只有 1 块 7TB NVMe（非测试盘、未 vfio）→ NoF 必须借 node3。
+- 缺口：node1 无 Mooncake build（只有源码，无 build/stress_cluster_bench；CUDA 12.9）；node1 是他人占用节点（who=16、load 14.43）→ 跑测试需用户授权；URMA 设备节点需再确认；CPU 型号/UB NUMA 未取得。
+- 未跑 benchmark、未编译、未改端口/target/驱动/盘；第一组 node2/node4 未触碰。
+- 产物：`测试相关资料/第二组测试环境/环境盘点_20261109.md`；台账（测试侧）另记。
