@@ -164,6 +164,7 @@
 | E3-BA | 2026-11-09 | **第六次 A/B 补 100-key 臂（缩短版）**：只跑 c/d 1/1，与 R49 200k 同窗口/同采样；200k 不重跑 | 已关闭（回执已收） | 同 master node2、同窗口、sample0.1：**100-key 比 200k 慢**。c：avg 531.02/P50 491.52/P90 622.59/P99 765.96 vs 476.45/475.13/487.42/503.81 → ΔP50 +16.4（+3.4%，噪声内）、ΔP99 +262.2（+52.0%）、Δavg +54.6（+11.5%）。d：771.74/720.89/958.46/1097.73 vs 657.63/663.55/688.13/720.89 → **ΔP50 +57.3（+8.6%，>5% 成立）**、ΔP99 +376.8（+52.3%）、Δavg +114.1（+17.4%）。100-key 回绕 c≈1148×/1113×、d≈780×/776×；key0–99 复用未重写。**推翻 E3-AZ 的“P50 涨全是 query、数据面不变”推断**：同 master 下仅 key 数就让 d P50 +57.3、P99 +52%；E3-AZ 的旧 P50/P99 是反推值，不能再用。 |
 | E3-BB | 2026-11-09 | **只读环境盘点**：在 node1/node3 中找第二组测试环境的 RTX 4090；不跑 benchmark、不改环境 | 已关闭（回执已收） | **RTX 4090D 在 node1（141.61.84.245）**，1 卡 24564 MiB、Gen4 x16、NUMA0；**node3（141.61.84.149）无 GPU、11×7TB**，建议 client/GPU=node1 + target=node3。四场景：**b 具备、d 有条件（node3 当 target）、a/c 不具备（node1 无 nvidia_peermem）**。缺口：node1 无 Mooncake build、本机仅 1 块 7TB 非测试盘；node1 他人占用（who=16/load14.43）需授权；URMA `/dev/uburma` 暴露不全（node1 只 udmac0d1e2，node3 只 bonding_dev_0）。零环境变更。产物 `第二组测试环境/环境盘点_20261109.md`。 |
 | E3-BC | 2026-11-09 | **第六次测试最终结果**：node2/node4，4MB a/b/c/d 全量（16 格）+ 1/1 打点拆解；node1/node3 不动 | 已完成（回执已收） | 16 格 + 52 轮全部 failed=0；18:55:39 ALL DONE。**a/b=3000 keys（回绕 45–65×/37–59×）、c/d=220k（不回绕）**。clean 1/1 avg/P50/P99：a 421.8/409.6/446.5；b 531.8/532.5/557.0；c 465.0/462.9/499.7；d 657.4/655.4/688.1 µs。a/b 1/1 变慢 = 纯 query（+53.3/+50.8）；c/d 220k 省回 query（−2.3/−25.2）。**1/1 诊断**：a query98.3+read325.0、b 99.7+438.5、c 100.9+372.6、d 104.5+551.5，残差 0.9–4 闭合。**风险**：1/16 c/d +2.0%/+4.3% 未定；d 16/16 尾部恶化（P99 559,940/P999 1,220,543/Max 1,663,753 vs R36 463,471/838,861/1,167,962）；`MC_STORE_UB_POLL_SLEEP_US=0` 四并发统一（R29 证 16 线程无差）；node4 他人 reactor_117 601% CPU（不在 cpu0–83，记内存带宽风险）；memory 段 32→28.78GiB、824 个非 key0–2999 memory key 被回收，未解释；`read_overhead_us` 本 build 等于 read_us，不能当独立段相加。产物 R51（73 文件/68.8 MB）。 |
+| E3-BD | 2026-11-09 | **第二组环境搭建**：node1=4090D client，node3=target+master；装 peermem、编译 Mooncake、建 target/RAID0/NoF、a/b memory、跑通 a/b/c/d 1/1 冒烟 | 待执行 | 目标：node1/node3 完全 ready 到能跑 a/b/c/d 1/1 4MB 冒烟（failed=0）。步骤：①只读查占用/盘/驱动；②node3 选 5×7TB 做 RAID0 strip64K（与第一组对齐），NoF listener 4457、master 50056/9006、metadata 8086；③node1 装 nvidia_peermem、编译 Mooncake/bench；④a/b memory 32GiB；⑤URMA/NoF 连通；⑥a/b/c/d 100-key 10s 冒烟；不跑全量、不改第一组 node2/4。 |
 
 ---
 
@@ -3666,3 +3667,60 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 - 零环境变更：master 224956、client 226145、target 640953@4457、node4 master 1315494 均未重启；端口未回 4421；5 盘 vfio-pci。
 - 回退：无源码/服务改动；a/b 段被探针写满 8192 keys，本轮只用 key0–2999；恢复 100-key 需删 key（未做）。
 - 产物：R51_20261109_4mb_full_breakdown（73 文件/68.8 MB）；台账 §86；索引 R51。
+
+---
+
+# E3-BD（待执行 · 2026-11-09）· 第二组环境搭建：node1 4090D + node3 target/master
+
+> 用户确认 node1/node3 现在可用；要求把第二组环境**搭到完全 ready**：能跑通 a/b/c/d 1/1 4MB 冒烟（failed=0）。
+> **第一组 node2/node4 不动；本任务不跑全量矩阵；node3 上如有他人数据/占用，先停并回报，不要清盘。**
+
+## 一、目标拓扑
+
+- **node1（141.61.84.245）= GPU/client**：RTX 4090D ×1，Gen4 x16，NUMA0。
+- **node3（141.61.84.149）= target + master**：11×7TB；选 **5×7TB** 做 RAID0（strip 64K，与第一组对齐），其余盘保留。
+- master=node3:50056 / admin 9006；metadata=node3:8086；NoF listener=node3:4457。
+- a/b memory segment 在 node3，先按 **32GiB**（与第一组同量级；3000 keys 足够）。
+- 第一组 node2/node4 完全不碰。
+
+## 二、步骤（按顺序，遇到不可逆操作先回报）
+
+### 0. 只读预检
+
+- node1/node3：`who`、load、`ps` 里 mooncake/spdk、端口 4457/50056/8086/9006 占用、`nvidia-smi`、`lsmod | grep nvidia_peermem`。
+- node3：`lsblk`/`nvme list`，确认系统盘、哪些盘无 mount/holder、是否他人 SPDK/数据；**有占用就停**。
+- 记录 node1 的 Mooncake 源码 commit/branch、CUDA 12.9、驱动 575.64.05。
+
+### 1. node3 target + master
+
+- 选 5 块 7TB 数据盘，vfio-pci 交给 SPDK；建 Raid0 `strip_size_kb=64`（与第一组一致），NoF subsystem `nqn.2026-01.io.spdk:urma-gpu-test`，listener 4457。
+- target 二进制优先用与第一组一致的 e12b7cb（md5 `e7440ae0…` 或等价）；否则在 node3 用同一 SPDK ref 编译，记录 commit/md5。
+- 启动 master（50056/9006），metadata 8086；NoF segment 注册到 master（node3 IP + 4457）。
+- 验证：`nvmf_subsystem_get_listeners` 4457、Raid0 online 5/5、master leader/serving、NoF segment 1 段。
+
+### 2. node1 client/GPU
+
+- 装 **nvidia_peermem**（匹配 575.64.05；`modinfo nvidia_peermem` → `modprobe` → `lsmod` 验证）；装不上就停并回报，a/c 先标 blocked。
+- 编译 Mooncake：源码 `~/mooncake/Mooncake`，分支 `nof-urma-v2-bench-merge`；SPDK pin e12b7cb；CUDA 12.9；产出 `stress_cluster_bench`；记录 commit、bin md5、依赖。
+- `mooncake_master` 可由 node1 编译后拷到 node3（同 md5），或 node3 本地构建；记录。
+- 4090D 先用 `gpu_mode=gdr-peermem`（与第一组同口径）；是否支持 dmabuf/gdr-direct 只记录，不切换。
+
+### 3. a/b memory + 连通
+
+- node3 起 32GiB memory segment（`MC_MEM_SEG=node3:13567` 或现有端口）；master list_segments = memory 1 + NoF 1。
+- node1 环境：`MC_MASTER_ADDR=node3:50056`、`MC_METADATA_URL=http://node3:8086/metadata`、`MC_NOF_PORT=4457`、target=node3。
+- URMA：node1 `/dev/uburma`（udmac0d1e2）、node3 `bonding_dev_0`；先 `urma_perftest` 或最小 NoF connect 验证；不通就回报设备节点缺口。
+
+### 4. 就绪冒烟（只 1/1，100 keys，10s）
+
+- a/b/c/d 各 1 次 4MB 1/1，100 keys，10s；要求 `failed=0`、`status[read_ok]>0`。
+- 记录：query/read/total、GiB/s、路径计数器（GDR/staging/GDS）、master/target PID、端口。
+- a/c 若因 peermem 不可用 → 明确标 blocked；b/d 必须通。
+- 冒烟通过即“环境 ready”；不跑全量、不做 16 格。
+
+## 三、产物
+
+- 测试侧：`测试相关资料/第二组测试环境/E3-BD_setup_20261109/`。
+- 本地：`D:\gds性能\第二组测试环境\`。
+- 必须给：拓扑表、磁盘选择、SPDK/master 命令、端口/PID、源码 commit/bin md5、peermem 状态、memory segment、URMA 设备、4 个冒烟结果、未解决缺口。
+- 不改第一组；不改交付表；不跑全量；无源码 diff。
