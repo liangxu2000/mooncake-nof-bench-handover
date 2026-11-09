@@ -3598,6 +3598,8 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 
 # E3-BC（待执行 · 2026-11-09）· 第六次测试最终结果：4MB 全量 + 1/1 打点拆解
 
+> **第一步只做容量预检，不跑任何 benchmark**：先查 a/b 的 memory segment 能放多少 GiB / 多少 4MB key（当前占用、总容量、能否放 859.4 GiB）。
+> **查完先回报，等确认后再跑 clean 矩阵**；不要直接开 16 格。
 > node1/node3 有人在用，第二组 4090 先不动；**第六次最终结果在 node2/node4 跑**。
 > **4MB a/b/c/d × 4 并发（16 格）clean + 1/1 打点拆解；不跑 8MB、query_only、target stage trace。**
 
@@ -3606,8 +3608,10 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 - master=node2（相对 GPU 的远端）；client/GPU=node4；target=node2 @4457；5 盘 vfio-pci。
 - 4MB、Plan A：`MC_SLICE_SIZE=1048576`、`MC_UB_STAGING_POOL_PIN=1`、1/1 `MC_STORE_UB_POLL_SLEEP_US=0`、其余默认 50；`--local_buffer_size=2G`、`--global_segment_size=0`、`numactl --cpunodebind=0`、`--verify=false`。
 - **keys=220,000（4 MiB × 220k = 859.4 GiB）**；**warmup=45；start0（不 skip）**。
-- 先查 a/b 的 memory segment 容量：能否放 859.4 GiB？放不下 → 停、回报最大可放 key，不要静默退回 100。
-- 先做 10s 冒烟，确认 60s 不回绕；若顺序读 >13.5 GiB/s，先加 N 或缩短 duration 再正式跑。
+- **先只做容量预检**：查 a/b 的 memory segment 总容量、当前占用、最大可放 4MB key 数；优先只读 master `list_segments`/配置/`free -g`；必要时做 1 个短 prefill 探针，不跑矩阵。
+  - 能放 859.4 GiB → 回报后等确认再开跑。
+  - 放不下 → 停、回报最大可放 GiB/key 数；不要静默退回 100 keys，也不要直接开矩阵。
+- 预检通过后先做 10s 冒烟，确认 60s 不回绕；若顺序读 >13.5 GiB/s，先加 N 或缩短 duration 再正式跑。
 - 预填每个场景 220k；记录 prefill 吞吐/时间；target 容量 38.4TB，a/b 内存需确认。
 - 按《独占判定规范》记录；node1/node3 不碰；端口 4457；不改 target/master。
 
