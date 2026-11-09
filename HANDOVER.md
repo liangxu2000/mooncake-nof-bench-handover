@@ -158,6 +158,7 @@
 | E3-AU | 2026-11-05 | 独占窗口 query 复测：master 在 node2，a–d 四场景 query（2026-11-06 更新：去掉 a/b clean/trace） | 已关闭（2026-11-06，回执已收） | master node2、node4 远程 query；a/b/c/d query P50 **92.7/93.3/100.0/109.3**，mean **95.2/96.3/105.8/110.4**；NoF 源（c/d）vs 内存源（a/b）**P50 +11.65 µs（+12.53%）/ mean +12.35（+12.90%）**，越过 10% → 源相关；但主力是 d（d vs a/b +17.9%/+17.2%），c 只 +7~8%（记录级）；b vs a +0.65%/+1.16% → staging 不影响 query；P99 +8.09% < P50 +12.53% → 平移非尾部。**限制：非独占窗口**（node4 who=20、5 个他人 mooncake_master、2 client；node2 who=18），组内 spread a 11.87%/b 10.71%/c 0%/d 20.12%；机制未验证。**当前 master=node2**（pid 224956，50056/9006），node4 master 1315494 保留 metadata；产物 R45_20261106_query_master。 |
 | E3-AV | 2026-11-06 | host-only vs d 同窗口受控 A/B：d 场景只切 `gpu_mode=staging` vs `host`，同 build/keys/load + target bdev trace | 已关闭（2026-11-06，回执已收） | 清理干扰后独占；bdev per-64K staging 122.4 vs host 124.5（+1.7%）、target_us 160.8→161.1（+0.2%）→ **target 无差别**；客户端 total P50 664.0→320.7、read 556→214、吞吐 5.11→9.23 GiB/s，差的是 **staging copy ~343 µs**；节奏 1.83× 未抬高 bdev → 不是排队。**现 build `transfer_data_us` 对 NoF 恒 0，E3-AS 的 d transfer 205.7 无法同口径复现；E3-AS host 223.7/303.4 与本轮 host read 214.3/328.7 同量级。** |
 | E3-AW | 2026-11-06 | query 独占复测 + query-only/target-idle 对照：a–d query，c/d 只 prefill 不读 | 已关闭（2026-11-06，回执已收） | 独占后 Part A q P50 a 96.3/b 98.7/c 101.3/d 105.7，mem vs NoF **+6.15%/+6.61%**（3–10% 记录级，E3-AU 的 +12.5% 被独占窗口修正）；Part B query-only c 92.84/d 97.28/a 98.30/b 94.89，mem vs NoF **−1.59%/+0.61%（≤3%）** → **NoF 查表本身不贵**；正常读−query-only mean：a +2.1/b +7.7/c +10.4/d +11.6 µs → 数据面挤压 query，NoF 更多；机制未细分。**注意：target 在 E3-AU 后被重绑 vfio-pci 并重建，keys 200（E3-AU 100）；Part B 顺序跑、a/b 后跑更快，有漂移。** |
+| E3-AX | 2026-11-06 | 准备：SSD 前36MB慢窗口验证 + 全顺序读参数（大 key 数、跳过慢窗口）；先改端口 4457 | 待执行 | 先改 4457；验证每盘前36MB/RAID0 180MB慢窗口是否物理、key0–44 是否映射前180MB；确认当前 warmup 不跳过测量起点，需 `--read_start_key`/等价最小改动并回传 diff；核算容量/预填时间，初始 4MB 240k keys/960GB、8MB 120k/960GB，跳 45/23 keys；d 4MB pilot：100-loop vs 大key start0 vs start45；8MB 只做参数核算/冒烟；不跑全量 |
 
 ---
 
@@ -3238,3 +3239,65 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 - 未验证「d 在 query-only 仍比 c 高 4.8%」的机制（两者都在组内 spread 内）；未做 master 侧 profile。
 - E3-AW bench 源码有 1 处改动（`--query_only`，+19/−3，`--query_only=false` 行为不变），patched sha256 0a9ee48b…，原始备份 `stress_cluster_bench.cpp.bak_e3aw`；**待开发侧审阅/决定是否保留**。
 - 结束状态：node2 master 224956（50056/9006）、client 226145（:50156）、target 640953（4421）；node4 master 1315494（50056/8086/9006）未重启；无遗留 bench 进程；**master 仍在 node2；端口仍 4421，4457 留到下一任务前**。
+
+---
+
+# E3-AX（待执行 · 2026-11-06）· 准备：SSD 慢窗口验证 + 全顺序读参数
+
+> 背景：同事 B 测出**每块盘前 36MB 读很慢**，过后才正常；我们 RAID0 5 盘 → 慢窗口 **180MB**。
+> 4MB 包 = **45 个 key**，8MB = **23 个 key**。当前 100-key 循环读完 99 回 0，会反复进入慢窗口；4MB 下约 45% 的读落在慢窗口。
+> 用户怀疑之前 c/d 4MB 性能被慢窗口显著拉低，要求准备**完全顺序读**重测。**本任务只做验证/pilot，不跑全量；重跑等用户通知。**
+
+## 零、端口与独占
+
+- 按文件顶部《下一任务前置》先把 NoF 端口 **4421→4457**：target listener、客户端 `MC_NOF_PORT`、master `nof_register`、脚本 `nof_segments` 四处一致；先 `ss -ltnp | grep 4457` 确认空闲；保留 4421 回退。
+- 按《独占判定规范》确认窗口；他人 mooncake/spdk <1% 单核才继续。
+- master 保持 node2；target 数据面不动；不改交付表。
+
+## 一、验证慢窗口是否真实、物理还是时间性
+
+- 独立顺序读：在 target 上对 **前 180MB** 和 **180MB 之后** 各做一段顺序读（`spdk_nvme_perf` 或等价），比较读速；确认 36MB/盘、180MB/RAID0 是否成立。
+- key→LBA 映射：用当前 100-key prefill，开 target bdev trace，检查 key0–44 是否落在前 180MB；如果 key 放置不是顺序，记录实际映射，不要按 key 号硬跳。
+- 物理 vs 时间性：把前 180MB 连续读两遍。
+  - 第二遍仍慢 → **物理区域**，warmup 不能替代“跳过”，正式读必须从 180MB 之后开始；
+  - 第二遍变快 → **时间性预热**，warmup 45/23 keys 可能够。
+- 结论写清：慢窗口大小、key 映射、物理/时间性、对 4MB/8MB 的 skip 数（45/23）。
+
+## 二、确认当前 warmup 语义并准备“跳过慢窗口”
+
+- 代码事实：`DoWarmup()` 只读 key0..warmup-1；`RunReader` 仍从 key0 开始，**warmup 不会把测量起点推到 key45/23**。
+- 先查 bench 是否已有 `read_start_key`/`skip_keys`/等价参数；没有就加最小改动：
+  - 新增 `--read_start_key`（或等价），reader 从该 key 开始，总读 key 数 = num_keys - offset；
+  - prefill 仍写 0..num_keys-1；`--read_start_key=0` 行为不变；
+  - 确保 `warmup_keys` 与 `read_start_key` 可同时使用；回传最小 diff + base64 + sha256，原始备份。
+- 保证 60s 内**不回绕**：记录首/末 key、实际读 key 数；若读到的 key 数 ≥ num_keys 或回到 0，说明发生回绕，参数不够。
+
+## 三、容量与 key 数核算（先算再跑）
+
+- 查：target 5 盘可用容量、RAID0 总容量、node2 内存段容量、当前 prefill 吞吐；给出 4MB/8MB 能放多少 key。
+- 目标：一次顺序读 **>60s 不回绕**。公式：`N ≥ T_max × 60 / value_size × 1.2`（T_max 用实测顺序读的上界）。
+- 初始建议（按 10–15 GiB/s 上界、960GB 工作集）：
+  - 4MB：**240,000 keys（960GB）**；慢窗口跳过 **45 keys**；
+  - 8MB：**120,000 keys（960GB）**；慢窗口跳过 **23 keys**。
+- 若容量/内存不够，按实测缩小，但必须验证一次 pass >60s；预填时间按实测吞吐估算并记录。
+- 先做 c/d；a/b 是内存源，不受 SSD 慢窗口影响，是否大 key 另定，不在本轮范围。
+
+## 四、d 4MB pilot（只为判断慢窗口影响）
+
+- 三臂，同窗口、同 build、同 target、同 keys 布局：
+  - **A 现行**：100 keys 循环，warmup=5，测量从 key0；
+  - **B 大 key、不跳过**：大 N，测量从 key0（60s 内不回绕，只经历一次慢窗口）；
+  - **C 大 key、跳过慢窗口**：大 N，`read_start_key=45`（完全顺序、正常速度）。
+- 每臂先 10s 冒烟；正式 A/C 各 3×60s、B 1–3×60s（B 只为量化慢窗口，可少）；交替 A/C/A/C，避免漂移。
+- 记录：read/total P50/mean/P90/P99、GiB/s、failed、bdev per-64K、首末 key、实际读 key 数、是否回绕。
+- 预期/判据：
+  - C 明显快于 A、B 介于中间 → 慢窗口 + 回绕影响成立；记录提升幅度；
+  - B≈C 且都快于 A → 主要是回绕/随机，不是慢窗口本身；
+  - C≈A → 慢窗口假设不成立，回报并停。
+- 8MB 只做容量/参数核算 + 1×30s `read_start_key=23` 冒烟，不跑正式。
+
+## 五、回执
+
+- 结论：慢窗口是否存在、物理/时间性、key 映射、45/23 是否对；A/B/C 对比；推荐 N/start/warmup；预填时间与容量；旧 c/d 4MB 数据是否被污染。
+- 产物：`R48_20261106_seq_prep/`：meta、summary、trace 解析、pilot 日志、容量/预填记录、diff（如改 bench）。
+- 不改 master/交付表；不跑全量；重跑等用户通知。
