@@ -163,6 +163,7 @@
 | E3-AZ | 2026-11-09 | **只导时延对比**：R36（master node4，100-key）vs R49（master node2，200k），不跑任何 benchmark | 已关闭（回执已收） | 字段确认：per-query 端到端 `get_into`/`batch_get_into` 外侧，不是 read/transfer。**1/1**：ΔP50 c +53.2/d +57.3，但 query +60~63 → 数据面 P50 仅 −6~−7（中位不变）；**非 query avg c −44.8（−10.6%）、d −89.3（−13.8%）；P99 c −110.6（−18%）、d −229.4（−24.1%）** → 平均/尾部变好，中位不变。**16/1**：c P50 +3.7%/P99 0、d P50 −2.3%/P99 −2.6%，基本不变。**1/16**：c/d P50 +1.8%/P99 +2.4~2.6%/avg +2%，两场景同步 +2% 未定。**16/16**：c 逐位不变；d P50 −19.5%/avg −1.0%，但 P99 +12.7%、P999 +60.5%、Pmax +80.4%（尾部恶化）。三变量（方法/master/sample0.1）已分开；1/16、16/16 不能拆 query，标未定。产物 R49_latency_compare.md/.csv/.split.csv。 |
 | E3-BA | 2026-11-09 | **第六次 A/B 补 100-key 臂（缩短版）**：只跑 c/d 1/1，与 R49 200k 同窗口/同采样；200k 不重跑 | 已关闭（回执已收） | 同 master node2、同窗口、sample0.1：**100-key 比 200k 慢**。c：avg 531.02/P50 491.52/P90 622.59/P99 765.96 vs 476.45/475.13/487.42/503.81 → ΔP50 +16.4（+3.4%，噪声内）、ΔP99 +262.2（+52.0%）、Δavg +54.6（+11.5%）。d：771.74/720.89/958.46/1097.73 vs 657.63/663.55/688.13/720.89 → **ΔP50 +57.3（+8.6%，>5% 成立）**、ΔP99 +376.8（+52.3%）、Δavg +114.1（+17.4%）。100-key 回绕 c≈1148×/1113×、d≈780×/776×；key0–99 复用未重写。**推翻 E3-AZ 的“P50 涨全是 query、数据面不变”推断**：同 master 下仅 key 数就让 d P50 +57.3、P99 +52%；E3-AZ 的旧 P50/P99 是反推值，不能再用。 |
 | E3-BB | 2026-11-09 | **只读环境盘点**：在 node1/node3 中找第二组测试环境的 RTX 4090；不跑 benchmark、不改环境 | 已关闭（回执已收） | **RTX 4090D 在 node1（141.61.84.245）**，1 卡 24564 MiB、Gen4 x16、NUMA0；**node3（141.61.84.149）无 GPU、11×7TB**，建议 client/GPU=node1 + target=node3。四场景：**b 具备、d 有条件（node3 当 target）、a/c 不具备（node1 无 nvidia_peermem）**。缺口：node1 无 Mooncake build、本机仅 1 块 7TB 非测试盘；node1 他人占用（who=16/load14.43）需授权；URMA `/dev/uburma` 暴露不全（node1 只 udmac0d1e2，node3 只 bonding_dev_0）。零环境变更。产物 `第二组测试环境/环境盘点_20261109.md`。 |
+| E3-BC | 2026-11-09 | **第六次测试最终结果**：node2/node4，4MB a/b/c/d 全量（16 格）+ 1/1 打点拆解；node1/node3 不动 | 待执行 | master node2、client/GPU node4、target node2 @4457；4MB、Plan A；**220k keys/859.4GiB，warmup45，start0**（a/b 先查 memory segment 容量；放不下就停并回报）；clean（sample=0）16 格：1/1、16/1 各 3×60s，1/16、16/16 各 2×60s；诊断 1/1 a/b/c/d 各 3×60s（sample=1 + UB_WORKER_DIAG，c/d 用现有 NoF breakdown）；不跑 8MB/query_only/target stage trace；结果 R51。 |
 
 ---
 
@@ -3592,3 +3593,44 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 - 缺口：node1 无 Mooncake build（只有源码，无 build/stress_cluster_bench；CUDA 12.9）；node1 是他人占用节点（who=16、load 14.43）→ 跑测试需用户授权；URMA 设备节点需再确认；CPU 型号/UB NUMA 未取得。
 - 未跑 benchmark、未编译、未改端口/target/驱动/盘；第一组 node2/node4 未触碰。
 - 产物：`测试相关资料/第二组测试环境/环境盘点_20261109.md`；台账（测试侧）另记。
+
+---
+
+# E3-BC（待执行 · 2026-11-09）· 第六次测试最终结果：4MB 全量 + 1/1 打点拆解
+
+> node1/node3 有人在用，第二组 4090 先不动；**第六次最终结果在 node2/node4 跑**。
+> **4MB a/b/c/d × 4 并发（16 格）clean + 1/1 打点拆解；不跑 8MB、query_only、target stage trace。**
+
+## 一、固定口径
+
+- master=node2（相对 GPU 的远端）；client/GPU=node4；target=node2 @4457；5 盘 vfio-pci。
+- 4MB、Plan A：`MC_SLICE_SIZE=1048576`、`MC_UB_STAGING_POOL_PIN=1`、1/1 `MC_STORE_UB_POLL_SLEEP_US=0`、其余默认 50；`--local_buffer_size=2G`、`--global_segment_size=0`、`numactl --cpunodebind=0`、`--verify=false`。
+- **keys=220,000（4 MiB × 220k = 859.4 GiB）**；**warmup=45；start0（不 skip）**。
+- 先查 a/b 的 memory segment 容量：能否放 859.4 GiB？放不下 → 停、回报最大可放 key，不要静默退回 100。
+- 先做 10s 冒烟，确认 60s 不回绕；若顺序读 >13.5 GiB/s，先加 N 或缩短 duration 再正式跑。
+- 预填每个场景 220k；记录 prefill 吞吐/时间；target 容量 38.4TB，a/b 内存需确认。
+- 按《独占判定规范》记录；node1/node3 不碰；端口 4457；不改 target/master。
+
+## 二、clean 全量（16 格）
+
+- a/b/c/d × 1/1、1/16、16/1、16/16。
+- 1/1、16/1 各 3×60s；1/16、16/16 各 2×60s（40 样本，老样子）。
+- **clean：不开 `MC_HIFREQ_LOG_SAMPLE_RATE`、不开 `MC_UB_WORKER_DIAG`、不开 trace。**
+- 每格记录 min/avg/P50/P90/P99/P99.9/P99.99/Pmax、GiB/s、failed、读 key 数/首末 key、是否回绕。
+- 不跑 8MB、不做 query_only。
+
+## 三、1/1 打点拆解（诊断批）
+
+- a/b/c/d × 1/1，各 3×60s；沿用 R36D 口径：
+  - `MC_HIFREQ_LOG_SAMPLE_RATE=1`、`MC_UB_WORKER_DIAG=1`（a/b）；
+  - c/d 用现有 NoF breakdown/日志，不启 target stage buffer。
+- 记录各场景分段：query、transfer/UB、copy、其他、outer；与 clean 分开，不混表。
+- 日志会很大（220k 读/轮），先确认 node4 磁盘空间；跑完压缩/保留。
+- 打点批不写进 clean 16 格；只做拆解。
+
+## 四、产物
+
+- 测试侧新建：`测试相关资料/第六次测试结果/R51_20261109_4mb_full_breakdown/`。
+- 本地对应：`D:\gds性能\第六次测试\`。
+- 产物：meta（容量/预填/独占/端口）、clean summary.csv（16 格）、逐轮日志、回绕检查、诊断 breakdown.csv/日志、load/hostsnap、scripts.md5。
+- 不改交付表；无源码 diff；不跑 8MB；node1/node3 不动；端口不回 4421。
