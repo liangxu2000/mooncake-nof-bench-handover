@@ -3512,7 +3512,7 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 - **100 keys、warmup=5、不设 `read_start_key`**；这是 R36 旧方法。
 - **sample=0.1**（与 R49 200k 一致；不是真 clean，但 A/B 两边一致）。
 - c/d × 1/1、1/16、16/1、16/16；1/1、16/1 各 3×60s，1/16、16/16 各 2×60s（与 R49 相同）。
-- 确保 key0–99 已 prefill（target 上已有 R49 的 200k，可用前 100；若重写 100，记录）。
+- **不要重写 100 keys**：target 上已有 R49 的 200k，直接用现有 key0–99 读；重写会改变 target 写状态/布局，A/B 不干净。记录 key0–99 的 LBA/所属段。
 - 端口 4457；不改 target/master；按《独占判定规范》记录。
 
 ## 二、输出（只要时延）
