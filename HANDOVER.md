@@ -160,6 +160,7 @@
 | E3-AW | 2026-11-06 | query 独占复测 + query-only/target-idle 对照：a–d query，c/d 只 prefill 不读 | 已关闭（2026-11-06，回执已收） | 独占后 Part A q P50 a 96.3/b 98.7/c 101.3/d 105.7，mem vs NoF **+6.15%/+6.61%**（3–10% 记录级，E3-AU 的 +12.5% 被独占窗口修正）；Part B query-only c 92.84/d 97.28/a 98.30/b 94.89，mem vs NoF **−1.59%/+0.61%（≤3%）** → **NoF 查表本身不贵**；正常读−query-only mean：a +2.1/b +7.7/c +10.4/d +11.6 µs → 数据面挤压 query，NoF 更多；机制未细分。**注意：target 在 E3-AU 后被重绑 vfio-pci 并重建，keys 200（E3-AU 100）；Part B 顺序跑、a/b 后跑更快，有漂移。** |
 | E3-AX | 2026-11-06 | 准备：SSD 前36MB慢窗口验证 + 全顺序读参数（大 key 数、跳过慢窗口）；先改端口 4457 | 已关闭（验证/pilot，未跑全量） | 慢窗口真实、6.1×、物理：LBA 0–180MB bdev mean 208.8（P50 202）vs 180MB 后 34.1–35.1（P50 35–36），读两遍不变；key→LBA 单调，skip=45（4MB）/23（8MB）。**但对 d/4MB 吞吐几乎没影响**：100-key 循环 **5.29** vs 120k 不回绕 **5.27 GiB/s（−0.4%）** → 历史 c/d 4MB 数据没有被慢窗口显著污染。**skip45 反而 4.52 GiB/s（−14.5%）**，C 臂 trace 显示慢区移到 180–360MB/360MB–1GB（A 同 LBA 35 µs），疑 480GB 预填后 SLC→TLC 搬迁；C 异常未定性，按“不要猜”停。端口 4457；旧 4421 注册需 nof_unregister（否则 2 段/容量翻倍，且会清 key）。容量 38.41TB；4MB 120k/480GiB、8MB 48k/384GiB；8MB 冒烟 6.20 GiB/s 不回绕。**等用户决定是否重跑/是否先做 settle 验证** |
 | E3-AY | 2026-11-09 | **第六次测试**：4MB c/d clean，大 key 顺序读（200k，60s 不回绕），不跑 8MB/trace | 已完成（回执已收；数据需口径确认） | 20 轮 failed=0、全部不回绕（max 195,104/200k）；吞吐 c 1/1 8.21 / 16/1 12.63 / 1/16 11.34 / 16/16 12.68；d 1/1 5.94 / 16/1 11.39 / 1/16 8.39 / 16/16 11.54 GiB/s；c 全面快于 d（1/1 +38.1%、16/16 +9.9%）；线程扩展好于 batch。**方法学修正：E3-AX arm 脚本漏传 `--num_keys`，A/B/C 实际只读 100/54 key，E3-AX 的 A≈B/C 异常结论作废。** 但 E3-AY 的 d 1/1 5.94 vs R36 旧 5.72 仅 +3.8%、c 8.21 vs 8.36 −1.8%，矩阵级与 R36 基本一致 → **“+15%”是拿 E3-AX A（5.16）当基线的跨窗口结果，不能当慢窗口效应**。偏差：sample=0.1（非真 clean）；d 16/16 长尾 P999 0.88–1.81s；prefill wall 462s vs bench 54.37s 未解释。产物 R49。 |
+| E3-AZ | 2026-11-09 | **只导时延对比**：R36（master node4，100-key）vs R49（master node2，200k），不跑任何 benchmark | 待执行 | 从 R36 `summary.csv`/xlsx 与 R49 `summary.csv`/日志取 c/d × 1/1、1/16、16/1、16/16 的 avg/P50/P90/P99/P999/Pmax；补齐 R49 缺的 1/16；确认 R49 延迟字段（total/read）；给出原始差 + 扣除 query 增量后的“非 query”差；query 用 R36D（node4）与 E3-AW Part A（node2）分别列，不能混窗口；输出 `R49_latency_compare.md` + CSV；不改环境/不重跑 |
 
 ---
 
@@ -3422,3 +3423,40 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 - 矩阵 15:03 结束；15:39 才有他人 `cmake --build -j308`，不影响本轮数据；独占证据：node4 mooncake/spdk `/proc` 10 s 增量 0.00%，d 16/1 三轮 11.39/11.39/11.39。
 - 产物：R49_20261109_4mb_cd_seq（40 文件/29.7 MB）；台账 §81；索引 R49。
 - 零源码 diff；arm 脚本只补 `--num_keys`（md5 39434f46…→e05b5d7d…）；不改交付表；未跑 8MB/a/b/trace/query_only。
+
+---
+
+# E3-AZ（待执行 · 2026-11-09）· 只导时延对比：R36 vs R49，不跑 benchmark
+
+> 用户明确：**只看时延，不看吞吐**；要对比第六次方法修改前（R36，master node4，100-key）和后（R49，master node2，200k）有没有变化。
+> **本任务只读已有数据/日志，跑任何 benchmark、不改环境、不改源码、不重建 target。**
+
+## 一、数据来源
+
+- **旧（方法修改前）**：R36 `R36_20261103_4mb_full/summary.csv` + xlsx（4MB c/d × 4 并发；master node4，100-key；clean）。
+  - 需要 avg/P50/P90/P99/P999/Pmax。
+- **新（方法修改后）**：R49 `R49_20261109_4mb_cd_seq/summary.csv` + 逐轮日志（4MB c/d × 4 并发；master node2，200k；sample 0.1）。
+  - 补齐回执中缺的 **c/d 1/16** 分位。
+- **query 分段**：旧用 R36D（c 42.5 / d 42.8 mean，master node4）；新用 E3-AW Part A（c 105.8 / d 110.4 mean，master node2）。
+  - 明确标注：两者不同窗口，query 增量只作“量级修正”，不是精确同窗口差；E3-AT 同窗口 d 是 +55.3。
+
+## 二、必须输出的表
+
+1. **原始时延对比**（同字段、同并发）：
+   `场景 | 并发 | R36 avg/P50/P90/P99/P999/Pmax | R49 avg/P50/P90/P99/P999/Pmax | ΔP50/ΔP99/Δavg`
+2. **确认 R49 的延迟字段**：是 `get_into` total，还是 read/transfer？从 summary/日志字段名确认，写清。
+3. **query 增量单列**：旧 query（R36D）vs 新 query（E3-AW），说明 master node4→node2 的 +55~68 µs 量级。
+4. **非 query 对比**：`total − query` 的 avg/P50/P99（旧/新）；若字段不允许相减，明确写“不能拆”，不要硬算。
+5. **结论只回答**：方法改前/改后，时延有没有变化；哪些 cell 变好/变差/没变；不要把吞吐写进结论。
+
+## 三、口径与风险
+
+- **不能拿 R36 avg 对 R49 P50**；必须同字段对比。缺 P50 就标“缺”，不要用 avg 代替。
+- 旧 R36 是 master node4 + 100-key；新 R49 是 master node2 + 200k + sample 0.1；三个变量同时变：
+  1. 方法（100-key→200k）；
+  2. master 位置（node4→node2，query +55~68 µs）；
+  3. sample（clean→0.1，开销未知）。
+  结论必须把这三个变量分开说；分不开就写“未定”。
+- 若 R49 逐轮日志不足以补 1/16 分位，明确写缺数据，不要编。
+- 产物：`R49_20261109_4mb_cd_seq/R49_latency_compare.md` + `.csv`；回执给表 + 一句话结论。
+- 不跑 benchmark、不改端口/target/master、不改交付表、无源码 diff。
