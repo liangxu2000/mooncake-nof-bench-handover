@@ -3126,6 +3126,8 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 
 ## 零、前提：先查代码，再确认独占
 
+- **本任务不改端口，继续用 4421**；端口 4421→4457 留到下一个任务开始前（见文件顶部“下一任务前置”）。
+
 - **不换 master**：当前 master=node2、target=node2、client=node4；本任务只动 d 的数据面路径。
 - 先核对 **E3-AS host-only 的实际启动方式**：是现有 bench 的 `gpu_mode=host`，还是单独 harness；把命令/env 写进回执。
   若是 `gpu_mode=host`，本轮按 `gpu_mode=staging` vs `host` 做 A/B；若 E3-AS 用别的 harness，沿用同一 harness，但必须保证**两臂只差 copy/缓冲路径**。
@@ -3167,6 +3169,7 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 
 ## 零、前提
 
+- **本任务不改端口，继续用 4421**；端口 4421→4457 留到下一个任务开始前（见文件顶部“下一任务前置”）。
 - master 保持 node2；target node2；client node4；不换 master。
 - 严格按《独占判定规范》：可疑 PID 的 `/proc/<pid>/stat` utime/stime 前后增量、绑核空闲率、每轮 spread；**<1% 单核才算独占**；不满足就停并回报，不要用非独占数字下结论。
 - **query-only 实现**：先查现有 bench 是否有 metadata-only 模式；没有就写最小 harness 调 `ClientService::Query`
