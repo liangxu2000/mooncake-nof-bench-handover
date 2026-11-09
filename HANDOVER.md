@@ -156,8 +156,8 @@
 | E3-AS | 2026-11-05 | Mooncake 仅 SSD→node4 DRAM（host-only，无 H2D copy/无 GDR）vs 裸 SPDK 同形态：验证 Mooncake 是否始终比裸 SPDK 慢（P50/mean/P90/P99 同口径） | 已关闭（vs 4MB 单发成立；同形态不成立） | host-only 干净：effective_path=nof/host、staged_bytes=0、cuda_io=0；11.10 GiB/s（d 5.640 的 1.97×）。d 的 transfer 段就是 host-only（P50 223.7 / mean 303.4；d 端到端 692.5 vs host-only 351.8，差 ~340 µs = copy）。同统计量 vs 裸 4MB QD1（207.0/225.9/232.5/540.9）：transfer P50 +8.1%、mean +34.3%、P90 +107.4%、P99 +2.7%；vs 4MB 随机：mean +27.6%、P90 +34.8%、P99 −5.9%。**单位更正：裸 64K×QD4×4 的 139.3/218.0 是单 64K I/O；按 4.47 GiB/s 折算 4MB ~875 vs Mooncake ~352 → Mooncake 快 2.5×；撤回“同形态 +60.6%/+39.2%”。** **差异在肩部（P90），不是最尾；Mooncake P99 反而更低；同事 B 的“更慢”只在 vs 裸 4MB 单发时成立，“始终更慢”不成立。** 随机 64K×QD4×4 因 URMA queue_depth（16 在飞 + 4 qpair）失败；宽肩根因未定位（客户端栈 vs NoF 编排） |
 | E3-AT | 2026-11-05 | master 位置对 query 的影响：node4 本地 vs node2 远程（d 1/1，A0/B/A1） | 已关闭（保持 node4） | A0 node4：query P50 47.0/mean 47.6；B node2：102.0/104.3；A1 回 node4：46.7/47.3。**B vs A1（同窗口）query +55.3/+57.0 µs（+118.4%/+120.5%）；d total +56.7/+57.8（≈1:1）；throughput −7.0%；read_us +0.1%（数据面不变）；A1 回切 <3%。** 分布整体平移（B P99−P50 仅 13.8 µs）→ 跨节点 RPC 固定成本，不是抖动。**master 保持 node4。** 坑：换 master 后 NoF 段需重注册 + 重灌 key，否则 prefill 报 no NoF segments |
 | E3-AU | 2026-11-05 | 独占窗口 query 复测：master 在 node2，a–d 四场景 query（2026-11-06 更新：去掉 a/b clean/trace） | 已关闭（2026-11-06，回执已收） | master node2、node4 远程 query；a/b/c/d query P50 **92.7/93.3/100.0/109.3**，mean **95.2/96.3/105.8/110.4**；NoF 源（c/d）vs 内存源（a/b）**P50 +11.65 µs（+12.53%）/ mean +12.35（+12.90%）**，越过 10% → 源相关；但主力是 d（d vs a/b +17.9%/+17.2%），c 只 +7~8%（记录级）；b vs a +0.65%/+1.16% → staging 不影响 query；P99 +8.09% < P50 +12.53% → 平移非尾部。**限制：非独占窗口**（node4 who=20、5 个他人 mooncake_master、2 client；node2 who=18），组内 spread a 11.87%/b 10.71%/c 0%/d 20.12%；机制未验证。**当前 master=node2**（pid 224956，50056/9006），node4 master 1315494 保留 metadata；产物 R45_20261106_query_master。 |
-| E3-AV | 2026-11-06 | host-only vs d 同窗口受控 A/B：d 场景只切 `gpu_mode=staging` vs `host`，同 build/keys/load + target bdev trace | 待执行 | 先核对 E3-AS host-only 的实际启动方式与 `transfer` 打点边界；同窗口交替 A/B 各 3×60 s；比较 transfer 与 per-strip bdev 分布，分辨客户端路径/测量边界 vs 队列/节奏；解决 15–18 µs 未定因；不改 master/数据面/交付表 |
-| E3-AW | 2026-11-06 | query 独占复测 + query-only/target-idle 对照：a–d query，c/d 只 prefill 不读 | 待执行 | 按独占规范记录 `/proc` CPU 时间增量；Part A 四场景 3×60 s（d 可加 2 轮）；Part B c/d full 3×60 s、c/d query-only 3×60 s、a/b query-only 3×60 s；分辨 NoF 元数据查表成本 vs master/target 同机竞争；query-only 需现有开关或最小 harness，确认 metadata cache |
+| E3-AV | 2026-11-06 | host-only vs d 同窗口受控 A/B：d 场景只切 `gpu_mode=staging` vs `host`，同 build/keys/load + target bdev trace | 已关闭（2026-11-06，回执已收） | 清理干扰后独占；bdev per-64K staging 122.4 vs host 124.5（+1.7%）、target_us 160.8→161.1（+0.2%）→ **target 无差别**；客户端 total P50 664.0→320.7、read 556→214、吞吐 5.11→9.23 GiB/s，差的是 **staging copy ~343 µs**；节奏 1.83× 未抬高 bdev → 不是排队。**现 build `transfer_data_us` 对 NoF 恒 0，E3-AS 的 d transfer 205.7 无法同口径复现；E3-AS host 223.7/303.4 与本轮 host read 214.3/328.7 同量级。** |
+| E3-AW | 2026-11-06 | query 独占复测 + query-only/target-idle 对照：a–d query，c/d 只 prefill 不读 | 已关闭（2026-11-06，回执已收） | 独占后 Part A q P50 a 96.3/b 98.7/c 101.3/d 105.7，mem vs NoF **+6.15%/+6.61%**（3–10% 记录级，E3-AU 的 +12.5% 被独占窗口修正）；Part B query-only c 92.84/d 97.28/a 98.30/b 94.89，mem vs NoF **−1.59%/+0.61%（≤3%）** → **NoF 查表本身不贵**；正常读−query-only mean：a +2.1/b +7.7/c +10.4/d +11.6 µs → 数据面挤压 query，NoF 更多；机制未细分。**注意：target 在 E3-AU 后被重绑 vfio-pci 并重建，keys 200（E3-AU 100）；Part B 顺序跑、a/b 后跑更快，有漂移。** |
 
 ---
 
@@ -3210,3 +3210,31 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 
 - `R47_20261106_query_exclusive/`：meta（独占证据、query-only 实现/代码路径、cache 结论）、summary、逐轮日志、query/read/total 分位、target CPU/load 快照。
 - 无核心源码 diff（如改 bench，最小 diff 单独回传）；master 保持 node2；target/交付表不动。
+
+## 回执（2026-11-06，已收）
+
+**独占判定：清理后独占（他人 mooncake/spdk <1% 单核，逐轮 spread ≤3%）；master 保持 node2。**
+清理前有干扰：node2/node4 各有他人 `nvmf_tgt -m 0xfc` 占 cpu2–7 共 599% 单核、node4 有 3.5 天的 `perf top` 215%，已按 PID 精确清掉；他人 5 个空转 master 未动。
+
+### E3-AV（host-only vs d）→ 判据 #1：bdev 相同、差异在客户端 copy
+
+- target per-64K bdev_us：staging **122.4** vs host **124.5（+1.7%）**；P90 263→264、P99 420→419；target_us mean 160.8→161.1（+0.2%）→ **target 没有区别**。
+- 客户端 total P50 **664.0→320.7（−343 µs）**、read P50 **556→214**、吞吐 **5.11→9.23 GiB/s（+80.6%）** → 差的是 **staging copy 路径**。
+- 节奏差 **1.83×（130.3→239.0 Get/s）没有抬高 bdev** → 不是排队。
+- **关键口径**：现 build 对 NoF 的 `transfer_data_us` 恒为 0，E3-AS 的 d「transfer 205.7」无法同口径复现；E3-AS 的 host-only **223.7/303.4** 与本轮 host `read_us` **214.3/328.7** 同量级，可视为同一段。
+- 证据：R46_20261106_hostonly_ab（27 文件/2.57 MB）；8 臂 failed=0；spread A 0.6%/B 0.9%；bdev trace staging n=4,927,364 / host n=8,381,724 strips。
+
+### E3-AW（query 复测 + query-only）→ master 查表不因源类型变贵
+
+- Part A（正常读，a,b,c,d ×3）：q_P50 **96.3 / 98.7 / 101.3 / 105.7**；mem vs NoF **+6.15%（P50）/ +6.61%（mean）**（E3-AU 是 +12.5%/+12.9%，差别主要来自窗口是否独占）→ **3–10% 记录级**。
+- Part B（query-only，target 空闲）：c **92.84** / d **97.28** / a **98.30** / b **94.89** → mem vs NoF **P50 −1.59% / mean +0.61%（≤3%）** → spec 判据「query-only 高 >10%」**不成立**。
+- 正常读 − query-only（mean）：a **+2.1**、b **+7.7**、c **+10.4**、d **+11.6 µs** → 数据面在跑挤压 query，NoF 侧更多（4 lane worker + target 同机），归客户端数据路径/节奏，不是 master 查表。
+- 证据：R47_20261106_query_exclusive（58 文件/5.09 MB）；Part A 12 轮全 failed=0，9.29/7.30/7.38/5.03 GiB/s；spread a 3.1%/c 1.0%/d 5.7%（b 24.3%，单点 b_r1=113 µs）；Part B 12 轮全 failed=0，~1.0–1.07 万 queries/s。
+
+### 风险与偏差
+
+- 环境被破坏过：起跑前 node2 4421 无监听、5 块盘被还原到内核 nvme（E3-AU 之后他人改动）；按 §23 回绑 vfio-pci 并用 `node2_target_up.sh` 重建 target；Raid0 数据保留，未重跑 prefill（10 s 冒烟 failed=0、4.97 GiB/s）。→ 与 E3-AV「target 不动」有偏差，meta 已记录。
+- Part B 未做时间交替（12 臂顺序跑，存在漂移）；c/d 先跑、a/b 后跑且后者更快（漂移对内存源有利）；未做 Query 与 BatchQuery(1) 边界对齐。
+- 未验证「d 在 query-only 仍比 c 高 4.8%」的机制（两者都在组内 spread 内）；未做 master 侧 profile。
+- E3-AW bench 源码有 1 处改动（`--query_only`，+19/−3，`--query_only=false` 行为不变），patched sha256 0a9ee48b…，原始备份 `stress_cluster_bench.cpp.bak_e3aw`；**待开发侧审阅/决定是否保留**。
+- 结束状态：node2 master 224956（50056/9006）、client 226145（:50156）、target 640953（4421）；node4 master 1315494（50056/8086/9006）未重启；无遗留 bench 进程；**master 仍在 node2；端口仍 4421，4457 留到下一任务前**。
