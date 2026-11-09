@@ -158,7 +158,7 @@
 | E3-AU | 2026-11-05 | 独占窗口 query 复测：master 在 node2，a–d 四场景 query（2026-11-06 更新：去掉 a/b clean/trace） | 已关闭（2026-11-06，回执已收） | master node2、node4 远程 query；a/b/c/d query P50 **92.7/93.3/100.0/109.3**，mean **95.2/96.3/105.8/110.4**；NoF 源（c/d）vs 内存源（a/b）**P50 +11.65 µs（+12.53%）/ mean +12.35（+12.90%）**，越过 10% → 源相关；但主力是 d（d vs a/b +17.9%/+17.2%），c 只 +7~8%（记录级）；b vs a +0.65%/+1.16% → staging 不影响 query；P99 +8.09% < P50 +12.53% → 平移非尾部。**限制：非独占窗口**（node4 who=20、5 个他人 mooncake_master、2 client；node2 who=18），组内 spread a 11.87%/b 10.71%/c 0%/d 20.12%；机制未验证。**当前 master=node2**（pid 224956，50056/9006），node4 master 1315494 保留 metadata；产物 R45_20261106_query_master。 |
 | E3-AV | 2026-11-06 | host-only vs d 同窗口受控 A/B：d 场景只切 `gpu_mode=staging` vs `host`，同 build/keys/load + target bdev trace | 已关闭（2026-11-06，回执已收） | 清理干扰后独占；bdev per-64K staging 122.4 vs host 124.5（+1.7%）、target_us 160.8→161.1（+0.2%）→ **target 无差别**；客户端 total P50 664.0→320.7、read 556→214、吞吐 5.11→9.23 GiB/s，差的是 **staging copy ~343 µs**；节奏 1.83× 未抬高 bdev → 不是排队。**现 build `transfer_data_us` 对 NoF 恒 0，E3-AS 的 d transfer 205.7 无法同口径复现；E3-AS host 223.7/303.4 与本轮 host read 214.3/328.7 同量级。** |
 | E3-AW | 2026-11-06 | query 独占复测 + query-only/target-idle 对照：a–d query，c/d 只 prefill 不读 | 已关闭（2026-11-06，回执已收） | 独占后 Part A q P50 a 96.3/b 98.7/c 101.3/d 105.7，mem vs NoF **+6.15%/+6.61%**（3–10% 记录级，E3-AU 的 +12.5% 被独占窗口修正）；Part B query-only c 92.84/d 97.28/a 98.30/b 94.89，mem vs NoF **−1.59%/+0.61%（≤3%）** → **NoF 查表本身不贵**；正常读−query-only mean：a +2.1/b +7.7/c +10.4/d +11.6 µs → 数据面挤压 query，NoF 更多；机制未细分。**注意：target 在 E3-AU 后被重绑 vfio-pci 并重建，keys 200（E3-AU 100）；Part B 顺序跑、a/b 后跑更快，有漂移。** |
-| E3-AX | 2026-11-06 | 准备：SSD 前36MB慢窗口验证 + 全顺序读参数（大 key 数、跳过慢窗口）；先改端口 4457 | 待执行 | 先改 4457；验证每盘前36MB/RAID0 180MB慢窗口是否物理、key0–44 是否映射前180MB；确认当前 warmup 不跳过测量起点，需 `--read_start_key`/等价最小改动并回传 diff；核算容量/预填时间，初始 4MB 240k keys/960GB、8MB 120k/960GB，跳 45/23 keys；d 4MB pilot：100-loop vs 大key start0 vs start45；8MB 只做参数核算/冒烟；不跑全量 |
+| E3-AX | 2026-11-06 | 准备：SSD 前36MB慢窗口验证 + 全顺序读参数（大 key 数、跳过慢窗口）；先改端口 4457 | 已关闭（验证/pilot，未跑全量） | 慢窗口真实、6.1×、物理：LBA 0–180MB bdev mean 208.8（P50 202）vs 180MB 后 34.1–35.1（P50 35–36），读两遍不变；key→LBA 单调，skip=45（4MB）/23（8MB）。**但对 d/4MB 吞吐几乎没影响**：100-key 循环 **5.29** vs 120k 不回绕 **5.27 GiB/s（−0.4%）** → 历史 c/d 4MB 数据没有被慢窗口显著污染。**skip45 反而 4.52 GiB/s（−14.5%）**，C 臂 trace 显示慢区移到 180–360MB/360MB–1GB（A 同 LBA 35 µs），疑 480GB 预填后 SLC→TLC 搬迁；C 异常未定性，按“不要猜”停。端口 4457；旧 4421 注册需 nof_unregister（否则 2 段/容量翻倍，且会清 key）。容量 38.41TB；4MB 120k/480GiB、8MB 48k/384GiB；8MB 冒烟 6.20 GiB/s 不回绕。**等用户决定是否重跑/是否先做 settle 验证** |
 
 ---
 
@@ -3301,3 +3301,42 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 - 结论：慢窗口是否存在、物理/时间性、key 映射、45/23 是否对；A/B/C 对比；推荐 N/start/warmup；预填时间与容量；旧 c/d 4MB 数据是否被污染。
 - 产物：`R48_20261106_seq_prep/`：meta、summary、trace 解析、pilot 日志、容量/预填记录、diff（如改 bench）。
 - 不改 master/交付表；不跑全量；重跑等用户通知。
+
+## 回执（2026-11-06，已收）
+
+**端口已改 4457；master 仍在 node2；E3-AX 只做验证/pilot，未跑全量。**
+
+### 一、慢窗口：真实、6.1×、物理
+
+| 区间 | bdev mean（4 次：map100/pass2/trace_A/trace_A2） | P50 |
+| --- | --- | --- |
+| LBA 0–180 MB | **208.8 / 209.1 / 209.6 / 209.5** | 202 |
+| 180–360 MB | 34.3 / 34.1 / 35.1 / 35.0 | 35–36 |
+| 360 MB–1 GB | 34.1 / 33.9 / 35.0 / 34.8 | 35–36 |
+
+- 连读两遍不变（208.8→209.1）→ **物理区域**，warmup 不能替代跳过；宽度 180 MB = 5 盘 × 36 MB，与同事 B 吻合。
+- key→LBA **单调顺序**；慢窗口 = key 0–44（0–173.2 MB），key46 起点 180.0 MB → 4MB skip=45、8MB skip=23。
+
+### 二、但对 d/4MB 吞吐几乎没影响
+
+| 臂 | 吞吐 | read P50/mean | total mean |
+| --- | --- | --- | --- |
+| A 现行 100-loop（5 轮） | 5288/5282/5320/5291/5292（≈5.29） | 93–101 / 660–663 | 760–766 |
+| B 120k 大 key、start0（3 轮） | 5275/5257/5284（≈5.27） | 94–101 / 663–664 | 763–768 |
+| C 120k 大 key、skip45（5 轮） | 4548/4517/4507/4547/4516（≈4.52） | 93–103 / **788–792** | **887–903** |
+
+- **A vs B：−0.4%** → 历史 c/d 4MB 数据没有被慢窗口显著污染；与 E3-AV d（read mean 664.5 / total 772.3 / 5.11）基本同值。
+- **C 反而慢 14.5%**；C 的 trace 显示慢区在 180–360 MB（219 µs）与 360 MB–1 GB（204 µs），同一 LBA 段 A 只有 35 µs → **C 异常未定性**，最可能是 480 GB 预填后的 SLC→TLC 后台搬迁。**C 的 4.52 不能当“完全顺序读真实成绩”，也不能当“skip 有害”的定论；按“不要猜”停。**
+
+### 三、容量/8MB/端口
+
+- RAID0 38.41 TB；4MB 120k keys/480 GiB（60 s 读 79,299 不回绕、预填 8.17 GiB/s）；8MB 48k keys/384 GiB（预填 11.78 GiB/s；30 s 冒烟 skip=23 → **6.20 GiB/s / P50 1196.03 / P99 1605.63**，读 23,834 不回绕）；8MB 用 `--key_include_value_size=1` 隔离 key 空间。
+- 端口：add 4457 + remove 4421（不带 `-f IPv4` 报 -32602）；**旧 4421 注册不会自动消失**，曾出现两段 NoF（76.8 TB）→ 新编 `nof_unregister` 卸旧段 → 回到 1 段 38,407,493,406,160；卸旧段连带清掉 100 个 NoF key（200→100），已重新 prefill。
+- 结束状态：target 640953 @4457（4421 已移除，回退命令见 meta §1）；target 上共存 4MB 120k + 8MB 48k ≈864 GiB；master 224956、client 226145；5 盘 vfio-pci；未改交付表。
+- 13 个 60 s 臂 + 4 个 trace 臂 + 3 个冒烟，failed=0。
+
+### 四、源码 diff
+
+- `--read_start_key`：`mooncake-store/benchmarks/stress_cluster_bench.cpp` +12 行/2 处，0 时行为不变；备份 `.bak_e3ax`，diff 1595 B / base64 2128 B 在 R48。
+- 同文件还携带 E3-AW 的 `--query_only`（+19/−3）；两者互不影响，但**合并时要一起审阅**。
+- 产物：`R48_20261106_seq_prep/`（53 文件/16.04 MB）；台账 §80；索引 R48。
