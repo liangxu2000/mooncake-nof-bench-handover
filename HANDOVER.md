@@ -166,7 +166,7 @@
 | E3-BC | 2026-11-09 | **第六次测试最终结果**：node2/node4，4MB a/b/c/d 全量（16 格）+ 1/1 打点拆解；node1/node3 不动 | 已完成（回执已收） | 16 格 + 52 轮全部 failed=0；18:55:39 ALL DONE。**a/b=3000 keys（回绕 45–65×/37–59×）、c/d=220k（不回绕）**。clean 1/1 avg/P50/P99：a 421.8/409.6/446.5；b 531.8/532.5/557.0；c 465.0/462.9/499.7；d 657.4/655.4/688.1 µs。a/b 1/1 变慢 = 纯 query（+53.3/+50.8）；c/d 220k 省回 query（−2.3/−25.2）。**1/1 诊断**：a query98.3+read325.0、b 99.7+438.5、c 100.9+372.6、d 104.5+551.5，残差 0.9–4 闭合。**风险**：1/16 c/d +2.0%/+4.3% 未定；d 16/16 尾部恶化（P99 559,940/P999 1,220,543/Max 1,663,753 vs R36 463,471/838,861/1,167,962）；`MC_STORE_UB_POLL_SLEEP_US=0` 四并发统一（R29 证 16 线程无差）；node4 他人 reactor_117 601% CPU（不在 cpu0–83，记内存带宽风险）；memory 段 32→28.78GiB、824 个非 key0–2999 memory key 被回收，未解释；`read_overhead_us` 本 build 等于 read_us，不能当独立段相加。产物 R51（73 文件/68.8 MB）。 |
 | E3-BD | 2026-11-09 | **第二组环境搭建**：node1=4090D client，node3=target+master；装 peermem、编译 Mooncake、建 target/RAID0/NoF、a/b memory、跑通 a/b/c/d 1/1 冒烟 | 待执行 | 目标：node1/node3 完全 ready 到能跑 a/b/c/d 1/1 4MB 冒烟（failed=0）。步骤：①只读查占用/盘/驱动；②node3 选 5×7TB 做 RAID0 strip64K（与第一组对齐），NoF listener 4457、master 50056/9006、metadata 8086；③node1 装 nvidia_peermem、编译 Mooncake/bench；④a/b memory 32GiB；⑤URMA/NoF 连通；⑥a/b/c/d 100-key 10s 冒烟；不跑全量、不改第一组 node2/4。 |
 | E3-BE | 2026-11-09 | **第七次测试第一步**：d 1/1 实测 transfer/copy 拆开；问题文档 `第七次测试/第七次测试_起点问题_20261109.md` | 已完成（回执已收） | **直接打点成功，非估算**：transfer mean **208.8/211.0/213.5**（P50 212/219/220；submit 3.2/3.2/4.1、wait 202.1/204.2/204.7）；copy=scatter **339.3/338.7/340.0**（P50 339/338/340；scatter_copy 335.9/335.6/336.1）；read/query/total 551.9–557.7/108.1–138.5/661.1–697.5。恒等式闭合（alloc+prep+get+scatter+free−sp_total=−1；read−get−scatter=+3.7~4.2，p99 5.0）。**剩余 gap 42.4–47.1 µs 全在 transfer wait**（208.8–213.5 vs 预期166.4）；submit/包装3–4、alloc/prep/free=0。iostat：15044 req→64.19 child op/req（64K strip）、5 盘各12071MiB、盘侧6.03 GiB/s vs client5.87（2.7%）。**归因：wait 是 64×64K 在5盘RAID0上的流水完成时间；要到166.4需约25.2 GB/s（≈23.5 GiB/s，回执单位需核对），超出该阵列在64K strip + 单请求并发的能力 → 阵列带宽边界，不是协议/软件开销。** 历史：第四次296.4→本轮低83–88；第六次估算214.5被实测证实（≤1.5）；copy 与 E3-AJ 336.3 吻合。 |
-| E3-BF | 2026-11-09 | **第七次测试基线**：host vs staging 基线复测（d 1/1，220k，node2/4）；E3-BE 直接实测已完成，本臂只作交叉验证 | 待执行（用户要求基线对照） | E3-BE 结束后串行跑：H=`gpu_mode=host`（node4 DRAM buffer）3×60s；S=`gpu_mode=staging`（GPU HBM）3×60s；同 220k keys/target/master/窗口；两臂都开 target bdev trace，确认 per-64K 分布相同；输出 H.read（transfer 基线）、S.read、S.read−H.read（copy）；与 E3-BE 直接实测 transfer208.8–213.5/copy339、E3-AV host214/staging556/差342 对照；主结论仍用 E3-BE 直接打点；不跑全量/8MB/a/b/c/node1/3；不改 E3-BE。 |
+| E3-BF | 2026-11-09 | **第七次测试基线**：host vs staging 交叉验证（d 1/1，220k，node2/4） | 已关闭（回执已收） | H host read mean **215.75**（P50 218/P99 239）；S staging read mean **553.76**（P50 553/P99 569）；**差值 copy = 338.01 mean / 335.0 P50**；total 差 337.88/340.0；query 差 −0.21；ops/req 64.02 vs 64.03。与 E3-BE 直接打点 transfer208.8–213.5/copy339、E3-AV 214/556/342 互证；target bdev 5 盘均分、两臂 IO 形态一致，差值归 H2D copy。**host read 215.75 vs E3-BE transfer 208.8–213.5 差 2–7 µs，主结论仍用 E3-BE 直接打点；本臂只作交叉验证。** 单位修正：25.21 GB/s=23.48 GiB/s。产物 R53（32 文件/19.84 MB）。 |
 
 ---
 
@@ -3830,3 +3830,23 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 - 干扰：node4 他人 reactor_117 601.6%、cc1plus 100%、mooncake_client 100%；我方核 0–7 idle 91.5–100%；diag r2/r3 query 108→138，clean P50 仍 639–647。
 - 偏差：clean 6.09/6.12/6.07 GiB/s；诊断 5.87/5.60/5.57（failed=0）；诊断开销 +3.7%/+8.7%/+9.4%，后两轮额外部分来自干扰。
 - 产物：`R52_20261109_d_transfer_copy/`（26 文件/25.71 MB）；台账 §88；索引 R52；无源码 diff，target/master/client 未重启。
+
+## 回执（2026-11-09，已收）
+
+**host vs staging 交叉验证通过；与 E3-BE 直接打点、E3-AV 三方一致。**
+
+| 指标（µs） | H host | S staging | Δ = S − H |
+| --- | --- | --- | --- |
+| read mean / P50 / P99 | **215.75 / 218.0 / 239.0** | **553.76 / 553.0 / 569.0** | **+338.01 / +335.0 / +330.0** |
+| total mean / P50 | 319.33 / 314.0 | 657.21 / 654.0 | +337.88 / +340.0 |
+| query mean | 102.48 | 102.27 | −0.21 |
+| target ops/请求 | 64.02 | 64.03 | +0.01 |
+| GiB/s（仅参考） | 12.05 | 5.89 | — |
+
+- 2 冒烟 + H/S/H/S/H/S 6×60s 全部 rc=0/failed=0；H=`nof/host`、S=`nof/urma/cuda-domain`；`scatter_copy_breakdown` H=0。
+- 两臂 target bdev 5 盘严格均分（H r1 每盘 2,311,949 op/144,496.8 MiB；S r1 1,146,381/71,648.8），ops/req 64.02 vs 64.03，单盘 ticks/op 3,364–3,627 → **host/staging 只改客户端落点，没改盘侧形态**。
+- **copy = 338.01 mean / 335.0 P50**，与 E3-BE 直接打点 copy 339.3/338.7/340.0、E3-AV 342 互证；H read 215.75 vs E3-BE transfer 208.8–213.5 差 2–7 µs，**主结论仍用 E3-BE 直接打点，本臂只作交叉验证**。
+- host 臂 12.05 GiB/s 高于盘侧 6.03 历史上限 → 该臂瓶颈回到 NoF 数据面 + 单请求串行，只用于取差值，不作吞吐结论。
+- 单位修正：25.2 GiB/s → **25.21 GB/s = 23.48 GiB/s**（4 MiB/166.4 µs）；已改 ab_table、台账 §88.2、INDEX R52 三处。
+- 未做：全量/8MB/16 并发/stripe；`read_latency_ticks` 未校准；`--verify=false`；无源码 diff，未动 node1/node3。
+- 产物：R53_20261109_d_host_staging_baseline（32 文件/19.84 MB）；台账 §89；索引 R53。
