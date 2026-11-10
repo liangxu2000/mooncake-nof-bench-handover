@@ -172,7 +172,7 @@
 | E3-BI | 2026-11-10 | **裸 SPDK 同形态重测**：按 Mooncake transfer 的 64K I/O、4 qpair、在飞约26（QD≈6–7/核）重测；不跑4MB QD1 | 已取消（改用 urma_perf，转 E3-BK） | 用户决定直接用 `urma_perf` 测；本任务不执行。 |
 | E3-BK | 2026-11-10 | **urma_perf 基线（同机同 target）**：5SSD、stripe64K、b1T1；4MB/8MB + Mooncake 64K×4qpair 形态 | 部分完成（4MB b1T1 3轮，R58；其余未跑） | node4 initiator → node2 target 4457；编译/使用 e12b7cb `examples/nvme/urma_perf`；`-M cpu` + `URMA_PERF_REGION_REG=1`、`-T1 -b1`、`-w read`、`-t30`、`-n1 -g0 -l0`，`-o4M` 和 `-o8M` 各3轮；另跑 Mooncake 形态 `-o64K -T4 -b6/-b7` 各2–3轮；记录 P50/mean/P90/P99/GiB/s、target ops/req（4M=64、8M=128、64K=1）、5盘分布、in-flight；对照 Mooncake transfer 208.8–213.5、spdk_nvme_perf 4MB QD1、同事 b1T1；不改 target/strip/源码，不跑全量/node1/3。**2026-11-10 状态：node2/4 被占用暂缓；但 node4 上 `e3bk_matrix` 已自行跑完（15:55:14，含 dmabuf 臂 rc=1），无残留进程；数据在 node4 `~/nds/results/R57_…`（38 文件/264 KB），未分析未打包。** **2026-11-10 17:00 R58 最小集：4MB b1T1 `-M cpu` 3×30s（16:59:25→17:01:04，1m39s）avg 213.71/212.48/213.60（均值 213.26）、P50 185.60、P99 488.11、P99.9 568.32、18.31 GiB/s、离散 0.58%；无 A/B 两态 → 两态是 `spdk_nvme_perf` artifact；mean 与 Mooncake transfer 208.8–213.5 持平（差 −0.2~+4.5），P50 低 26–34（尾部形状不同：urma_perf 长右尾 mean>P50、Mooncake 紧 mean<P50）；`REGION_REG=1` 生效（whole-pool 4194304B 注册，cache miss n=5、per-I/O 注册=0，submit 70ns、wait 100ns、release 0 → CPU<0.2µs）→ 注册路径不是瓶颈；vs R57 同臂 215.12/221.39/214.64，本轮低 1.9–8.1、离散 4.6%→0.58%，R57 r2 偏高未复现（窗口噪声）。8MB/64K×4qpair/dmabuf 未跑。** |
 | E3-BJ | 2026-11-10 | **工具口径对齐（只收集/比较，不跑 benchmark）**：同事 B 的 `build/examples/urma_perf` vs 我们的 `build/bin/spdk_nvme_perf` | 已关闭（回执已收） | **同一层、不同程序**：urma_perf 就是我们 SPDK 树的 `examples/nvme/urma_perf`，NVMe-oF URMA initiator（`spdk_nvme_ns_cmd_read_ext`，必须带 subnqn），不是 raw URMA；`b1T1`=1 qpair×1在飞 = 我们 `-q1 -c0x1`；计时边界一致（不含连接/注册），不能解释 20+ µs。`-T`=worker/qpair数，`-b`=每worker在飞，`-M`=mem-type（cpu/posix/peermem/dmabuf），`REGION_REG=1`=整块注册跳过 per-I/O；**`-I/-C` 未知（四版 optstring 都没有，需他 commit 帮助）**。真正不能直接比：IO 8MB vs4MB、内存路径 cpu+整池 vs hugepage+shim、链路 node3→node1 6盘 vs node4→node2 5盘、SPDK 9b5cd59(drain-fix) vs e12b7cb、**NUMA 他全0 vs 我们 target reactor154–157(NUMA2)/盘0、client CPU0(NUMA0)/UB卡NUMA2**。更正 R55 peerB_param_compare 中“工具不同/四项不可设”的错误。产物 `第七次测试/工具口径对齐_20261110.md`。**2026-11-10 晚再更正（实测推翻 E3-BD）：`ps` 确认 reactor 在 154–157/NUMA2，`--lcores` 映射生效；`RTE_MAX_LCORE` 只限 `-m`→`-l` 形式。target 在 NUMA2 原本正确，E3-BD 的 NUMA0 更正作废；target↔盘跨 NUMA 重新成为与同事 B 差异嫌疑。** **2026-11-10 R58 补充：注册路径不是瓶颈（`REGION_REG=1` 整池注册、cache miss n=5、per-I/O 注册=0、CPU submit+wait+release <0.2 µs）。** |
-| E3-BL | 2026-11-10 | **照同事 B 复现裸 SPDK ~170 + 同 target 同窗口跑 Mooncake d transfer**（node2/4 暂时独占） | 待执行 | 用户拍板：**完全按 B 的测法，不再用自己那套 target 当基线**。①只读盘点 node2 逐 BDF 盘 NUMA + UB NIC NUMA，并取 B 的 `target_nvme_takeover.sh`、isolated lib、SPDK commit/二进制、5 盘 BDF（拿不到就回报，不猜）；②原样搭 B 的 target（6 reactor CPU2–7/NUMA0、`-I/-C/-R/-O/-s`、同盘）+ B 的 client（`MAX_IO_SIZE=4M`、同 lib/binary），`urma_perf` 4MB b1T1 3×30s 复现 ~170；③**同一 target 同窗口**注册 Mooncake NoF segment + 预填 d keys，跑 Mooncake d 1/1 transfer（staging timing）3×60s；④对比裸 vs Mooncake（同 target）→ 分离“target 配置/盘”与“Mooncake 开销”，对照 R58 213（我们旧 config）。拿不到 B 的 lib/脚本则用我们 e12b7cb 二进制 + B 的完整 target 配置做“配置复刻”，明确标注 binary 不同。不 kill 他人进程（node1/3 不动）、不改源码、异常保留证据。产物 R59 + 台账 §94 + INDEX + 五段式回执。 |
+| E3-BL | 2026-11-10 | **照同事 B 复现裸 SPDK ~170 + 同 target 同窗口跑 Mooncake d transfer**（node2/4 暂时独占） | 已完成（复刻失败；target 侧全部排除，剩客户端 41 µs） | 用户拍板：**完全按 B 的测法，不再用自己那套 target 当基线**。①只读盘点 node2 逐 BDF 盘 NUMA + UB NIC NUMA，并取 B 的 `target_nvme_takeover.sh`、isolated lib、SPDK commit/二进制、5 盘 BDF（拿不到就回报，不猜）；②原样搭 B 的 target（6 reactor CPU2–7/NUMA0、`-I/-C/-R/-O/-s`、同盘）+ B 的 client（`MAX_IO_SIZE=4M`、同 lib/binary），`urma_perf` 4MB b1T1 3×30s 复现 ~170；③**同一 target 同窗口**注册 Mooncake NoF segment + 预填 d keys，跑 Mooncake d 1/1 transfer（staging timing）3×60s；④对比裸 vs Mooncake（同 target）→ 分离“target 配置/盘”与“Mooncake 开销”，对照 R58 213（我们旧 config）。拿不到 B 的 lib/脚本则用我们 e12b7cb 二进制 + B 的完整 target 配置做“配置复刻”，明确标注 binary 不同。不 kill 他人进程（node1/3 不动）、不改源码、异常保留证据。产物 R59 + 台账 §94 + INDEX + 五段式回执。**2026-11-10 回执（复刻失败，但砍到只剩客户端）：B 的脚本/lib/binary 均 Permission denied（root 700）→ 只能配置复刻。6 个单变量臂（每臂 3×30s，node4→node2，`-o4M -T1 -b1 -M cpu`）全部 ~211 µs/18.46–18.52 GiB/s：B 全套配置+RM+q/c/n 211.41/211.99/210.68；去 RM 211.45/211.54/211.64；去 q/c/n（3 个客户端二进制）210.56/211.68/211.86；client 换 netlab lib 210.56/211.56/211.71；target 换 netlab lib 211.01/210.85/210.77；两侧都换 210.93/210.77/210.84。**target 换 netlab lib 后 push(C2H) 20.3→9.9 µs、TOTAL 85→74 µs（=B 的 74 µs），但客户端 avg 不动 → target 不是瓶颈。** 关键发现：`urma_perf` 的 `max_children_per_io` 由 namespace `optimal_io_boundary`=strip 唯一决定（128K→33、64K→65；entries=batch×children+1）→ R58 的 66/65 vs B 的 34/33 是 strip 不同，不是工具不同，“分片粒度”线关闭。硬件等价（10 盘同型号同链路）；盘侧 exec 两边逐位相同（+0.9%）。**剩余 211−170≈41 µs 全在客户端（node4）：B 的 client binary 无 URMA timing breakdown 段、与我方 3 个二进制都不同；B 的 isolated lib 仍未测到（root 700）。** Mooncake d 同窗口未做（node4 无我方 mooncake_client_runtime，50056/8086/9006 被同事 master 1315494 占）。**结论：170 不是硬件/target 天花板，是 B 的客户端栈；在拿到他的 binary+isolated lib 前，node2/4 裸基线用我们自己的 211，不用 170 当对照。** 环境已还原（4426 无监听、4420 同事仍在、我方 5 盘回 nvme0–4、同事 21/22/28/29/91 全程未碰、node1/3 未登录）；一次违规 pkill -f 误杀自身 ssh 已纠正（只影响自己会话）。产物 R59 44 文件/0.07MB；台账 §95；INDEX R59。 |
 
 ---
 
@@ -4243,3 +4243,59 @@ B 结果：avg 170.281 / P50 154.88 / P99 430.08 / P99.9 737.28 / max 2893.24 / 
 - 台账 §94；INDEX R59；**五段式回执**（结论/证据/未做未验证/风险偏差/产物）。
 - 必须给：B 料获取情况（拿到/缺口）、target 复刻方式（完全/配置）、reactor 实测核与 NUMA、逐 BDF 盘 NUMA 表、裸 3 轮 + Mooncake 3 轮原始数值、ops/req、5 盘分布、Mooncake 开销结论、环境变更与回退。
 - 预计耗时：盘点取料 5–10 min + 搭 target 5 min + 裸 3×30s≈2 min + Mooncake 预填/3×60s≈6–8 min ≈ **20–25 min**（取料受阻则回报后顺延）。
+
+## 回执（2026-11-10，已收）
+
+**结论：完全复刻失败（B 的脚本/lib/binary root 700 拿不到，只能配置复刻），但把 8 个候选砍到只剩 1 个——不在 target 配置，在客户端（node4）栈。**
+
+### 一、单变量臂（每臂 3×30s，node4→node2，`-o 4194304 -T1 -b1 -M cpu`）
+
+| 臂 | 改动 | avg µs ×3 | GiB/s |
+| --- | --- | --- | --- |
+| A128 | B 全套配置（+RM + `-q128 -c8192 -n8`） | 211.411 / 211.986 / 210.678 | 18.47 |
+| B1 | 去 RM | 211.450 / 211.541 / 211.639 | 18.46 |
+| B2 | 再去 `-q/-c/-n`（三轮各换一个客户端二进制） | 210.563 / 211.675 / 211.864 | 18.47 |
+| L1 | client 换 `~/nds/UMDK_netlab/lib` | 210.556 / 211.562 / 211.708 | 18.48 |
+| T1 | target 换 netlab 库 | 211.012 / 210.846 / 210.774 | 18.51 |
+| T2 | 两侧都换 | 210.932 / 210.772 / 210.839 | 18.52 |
+
+**全部 ~211 µs，任何 target 侧改动都拿不回来。**
+
+### 二、target 计时（同 target 换库前后）
+
+| 段 | 同事 B | 我方系统库 | 我方 netlab 库 |
+| --- | --- | --- | --- |
+| exec→cpl (SSD) | 66,650 ns | 67,280 / 64,750 | 63,620 |
+| push JFC (C2H) | 7,430 ns | 18,700 / 20,260 | 9,900 |
+| TOTAL parse→rsp | 74 µs | 86 / 85 | 74 |
+
+- 盘侧 exec 两边逐位相同（+0.9%）→ 盘与 RAID 等价，不是盘的问题。
+- 换 target 库后 target 内部 **完全对齐 B（74 µs）**，但客户端 avg 一点不动 → **target 已不是瓶颈**。
+
+### 三、关键发现：分片数由 strip 唯一决定
+
+- `urma_perf.c:807`：`max_children_per_io = (lba_count + 2*stripe_lbas - 2)/stripe_lbas`；`entries = batch×children+1`。
+- strip 128 KB → children 33 / entries 34（B）；strip 64 KB → children 65 / entries 66（R58）。
+- **所以 R58 的 66/65 vs B 的 34/33 是 strip 不同，不是工具不同；“分片粒度”这条线关闭。**
+
+### 四、排除/未排除
+
+- **已排除**：Raid0 strip（64→128 KB 复现 33/34，avg 仍 211）、iobuf 池/PG cache、`-q/-c/-n`、trans-mode RM、reactor 数量 6 与 NUMA（两边各自与自己的盘同域：B 4×N0+1×N2 配 CPU2–7/N0；我 5×N2 配 156–161/N2）、我方 3 个客户端二进制、target 侧 liburma。
+- **未排除（唯一）**：B 的 `build/examples/urma_perf` 二进制 + `/home/tong/umdk_gpu_isolated/lib`。B 的客户端输出**没有 URMA timing breakdown 段**，与我方 3 个二进制都不同；他的 isolated lib 仍 root 700 拿不到。**剩余 211−170≈41 µs 全在客户端栈。**
+- **未做**：Mooncake d 同窗口对照（node4 无我方 `mooncake_client_runtime`，50056/8086/9006 被同事 master 1315494 占用，需另起端口重部署）；B 的 5 块盘（在他运行中的 target 里）；8MB/多并发/全量。
+
+### 五、风险/环境
+
+- 一次违规（已纠正）：中途 `pkill -f 'spdk_n2b.sock'` 匹配到自身 ssh 命令行、把那条命令自己杀掉（无输出）；只影响自己会话，未碰他人进程；之后全部按 PID 文件 kill。违反项目规则 8，记此。
+- 端口用 4426（非 B 的 4420），RPC socket `/var/tmp/spdk_n2b.sock`，未占他的 `/var/tmp/spdk.sock`。
+- 环境已完全还原：4426 无监听、4420 仍在（同事）、我方 5 盘已 bind 回 nvme0–nvme4、同事的 21/22/28/29/91 全程未碰、node1/node3 全程未登录；node2 遗留 `~/nds/UMDK_netlab/lib`（2.3 MB，未被引用，可删）。
+- max 1.1–3.6 ms 尖峰为首 IO 连接伪影，未剔除；未改源码/交付表/默认端口。
+
+### 六、产物
+
+- `测试相关资料/第七次测试结果/R59_20261110_d_replicate_peerB/` 44 文件 / 0.07 MB：`ab_table.md`（6 臂全表+分解+判定）、`meta.md`（参数/RPC/逐 BDF NUMA 表/回退清单）、`scripts.md5`、`n2b_tgt.log.gz`、6 个 `e3bl_*.log`、17 个单轮原始日志、15 个脚本。
+- 台账 §95（95.1–95.9）；INDEX R59。
+
+### 七、下一步（一句话）
+
+要拿回那 41 µs，只剩一条路：**拿到 B 的 `build/examples/urma_perf` 二进制 + `/home/tong/umdk_gpu_isolated/lib`**（请他 `chmod o+r` 或拷到公共路径）。在那之前，node2/4 的裸基线与 Mooncake 对照都用**我们自己的 211 µs**，不要用他的 170 当对照——两者不是同一套栈。
