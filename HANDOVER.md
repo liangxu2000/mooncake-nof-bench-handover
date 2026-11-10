@@ -165,7 +165,7 @@
 | E3-BB | 2026-11-09 | **只读环境盘点**：在 node1/node3 中找第二组测试环境的 RTX 4090；不跑 benchmark、不改环境 | 已关闭（回执已收） | **RTX 4090D 在 node1（141.61.84.245）**，1 卡 24564 MiB、Gen4 x16、NUMA0；**node3（141.61.84.149）无 GPU、11×7TB**，建议 client/GPU=node1 + target=node3。四场景：**b 具备、d 有条件（node3 当 target）、a/c 不具备（node1 无 nvidia_peermem）**。缺口：node1 无 Mooncake build、本机仅 1 块 7TB 非测试盘；node1 他人占用（who=16/load14.43）需授权；URMA `/dev/uburma` 暴露不全（node1 只 udmac0d1e2，node3 只 bonding_dev_0）。零环境变更。产物 `第二组测试环境/环境盘点_20261109.md`。 |
 | E3-BC | 2026-11-09 | **第六次测试最终结果**：node2/node4，4MB a/b/c/d 全量（16 格）+ 1/1 打点拆解；node1/node3 不动 | 已完成（回执已收） | 16 格 + 52 轮全部 failed=0；18:55:39 ALL DONE。**a/b=3000 keys（回绕 45–65×/37–59×）、c/d=220k（不回绕）**。clean 1/1 avg/P50/P99：a 421.8/409.6/446.5；b 531.8/532.5/557.0；c 465.0/462.9/499.7；d 657.4/655.4/688.1 µs。a/b 1/1 变慢 = 纯 query（+53.3/+50.8）；c/d 220k 省回 query（−2.3/−25.2）。**1/1 诊断**：a query98.3+read325.0、b 99.7+438.5、c 100.9+372.6、d 104.5+551.5，残差 0.9–4 闭合。**风险**：1/16 c/d +2.0%/+4.3% 未定；d 16/16 尾部恶化（P99 559,940/P999 1,220,543/Max 1,663,753 vs R36 463,471/838,861/1,167,962）；`MC_STORE_UB_POLL_SLEEP_US=0` 四并发统一（R29 证 16 线程无差）；node4 他人 reactor_117 601% CPU（不在 cpu0–83，记内存带宽风险）；memory 段 32→28.78GiB、824 个非 key0–2999 memory key 被回收，未解释；`read_overhead_us` 本 build 等于 read_us，不能当独立段相加。产物 R51（73 文件/68.8 MB）。 |
 | E3-BD | 2026-11-09 | **第二组环境搭建**：node1=4090D client，node3=target+master；装 peermem、编译 Mooncake、建 target/RAID0/NoF、a/b memory、跑通 a/b/c/d 1/1 冒烟 | 待执行 | 目标：node1/node3 完全 ready 到能跑 a/b/c/d 1/1 4MB 冒烟（failed=0）。步骤：①只读查占用/盘/驱动；②node3 选 5×7TB 做 RAID0 strip64K（与第一组对齐），NoF listener 4457、master 50056/9006、metadata 8086；③node1 装 nvidia_peermem、编译 Mooncake/bench；④a/b memory 32GiB；⑤URMA/NoF 连通；⑥a/b/c/d 100-key 10s 冒烟；不跑全量、不改第一组 node2/4。 |
-| E3-BE | 2026-11-09 | **第七次测试第一步**：d 1/1 实测 transfer/copy 拆开；问题文档 `第七次测试/第七次测试_起点问题_20261109.md` | 待执行 | 只做 d 4MB 1/1，node2/4，master node2，target4457，220k keys/warmup45/start0；先 clean 3×60s + 诊断 3×60s（sample1 + `MC_BENCH_STAGING_TIMING=1` + `MC_BENCH_STAGING_PATH_TIMING=1`），看能否直接得 transfer_us/copy_us；若仍只有 read，做 host vs staging 同窗口 A/B（各 3×60s，target bdev trace）用 host read=transfer、staging read−host read=copy；必须给实际值+恒等式闭合，禁止 read−copy 估算冒充实测；不跑全量/8MB/a/b/c/node1/3。 |
+| E3-BE | 2026-11-09 | **第七次测试第一步**：d 1/1 实测 transfer/copy 拆开；问题文档 `第七次测试/第七次测试_起点问题_20261109.md` | 待执行 | 只做 d 4MB 1/1，node2/4，master node2，target4457，220k keys/warmup45/start0；**正式两臂：H=`gpu_mode=host`（node4 DRAM buffer，无 copy）3×60s，S=`gpu_mode=staging`（正常 d）3×60s，同 keys/target/窗口 + target bdev trace；H.read=transfer 基线，S.read−H.read=copy**；另跑诊断 sample1+`MC_BENCH_STAGING_TIMING=1`+`MC_BENCH_STAGING_PATH_TIMING=1`，有直接 transfer_us/copy_us 就优先用；必须给实际值+恒等式闭合，禁止 read−copy 估算冒充实测；不跑全量/8MB/a/b/c/node1/3。 |
 
 ---
 
@@ -3744,14 +3744,13 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 ## 二、测法（按顺序）
 
 1. **clean 基线**：d 1/1 3×60s，sample=0，不开 staging timing；记录 query/read/total。
-2. **诊断**：d 1/1 3×60s，`MC_HIFREQ_LOG_SAMPLE_RATE=1` + `MC_BENCH_STAGING_TIMING=1` + `MC_BENCH_STAGING_PATH_TIMING=1`；
-   先确认这些 env 在当前脚本是否生效，记录实际字段名。
-   - 若直接输出 **transfer_us 和 copy_us** 独立字段：直接用，检查恒等式 query+transfer+copy+其他≈total（残差 ≤5 µs）。
-3. **若诊断仍只有 read**：做 host vs staging 同窗口 A/B：
-   - H：`gpu_mode=host`（无 copy），3×60s；read 即 **NoF transfer 实际值**。
-   - S：`gpu_mode=staging`（有 copy），3×60s；S.read − H.read = **copy 实际值**。
-   - 两臂同 keys、target、master、窗口；开 target bdev trace，确认 target per-64K bdev 相同。
-   - 用 target bdev 分布排除“host/staging 改变了 target 形态”。
+2. **正式基线两臂（第七次第二步）**：
+   - H：`gpu_mode=host`，buffer=node4 DRAM（无 H2D copy），3×60s；`read` = **NoF transfer 基线**。
+   - S：`gpu_mode=staging`，buffer=GPU HBM（正常 d，有 copy），3×60s；`read` = transfer + copy。
+   - 两臂同 keys、target、master、窗口；**两臂都开 target bdev trace**，确认 per-64K bdev 分布相同；不同就停。
+   - `S.read − H.read` = **copy**；`H.read` = **transfer 基线**。这是两次实测相减，不是拿固定 copy 常量估算。
+3. **诊断交叉验证**：d 1/1 3×60s，`MC_HIFREQ_LOG_SAMPLE_RATE=1` + `MC_BENCH_STAGING_TIMING=1` + `MC_BENCH_STAGING_PATH_TIMING=1`；
+   若直接输出 **transfer_us / copy_us** 独立字段，优先用直接值，并与第 2 步的 H/S 差值对照；恒等式 query+transfer+copy+其他≈total（残差 ≤5 µs）。
 4. 两种方法都拿不到独立 transfer/copy → 停、回报；**禁止用 read−copy 的估算冒充实测**。
 
 ## 三、必须输出
