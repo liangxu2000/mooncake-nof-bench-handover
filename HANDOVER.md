@@ -166,7 +166,7 @@
 | E3-BC | 2026-11-09 | **第六次测试最终结果**：node2/node4，4MB a/b/c/d 全量（16 格）+ 1/1 打点拆解；node1/node3 不动 | 已完成（回执已收） | 16 格 + 52 轮全部 failed=0；18:55:39 ALL DONE。**a/b=3000 keys（回绕 45–65×/37–59×）、c/d=220k（不回绕）**。clean 1/1 avg/P50/P99：a 421.8/409.6/446.5；b 531.8/532.5/557.0；c 465.0/462.9/499.7；d 657.4/655.4/688.1 µs。a/b 1/1 变慢 = 纯 query（+53.3/+50.8）；c/d 220k 省回 query（−2.3/−25.2）。**1/1 诊断**：a query98.3+read325.0、b 99.7+438.5、c 100.9+372.6、d 104.5+551.5，残差 0.9–4 闭合。**风险**：1/16 c/d +2.0%/+4.3% 未定；d 16/16 尾部恶化（P99 559,940/P999 1,220,543/Max 1,663,753 vs R36 463,471/838,861/1,167,962）；`MC_STORE_UB_POLL_SLEEP_US=0` 四并发统一（R29 证 16 线程无差）；node4 他人 reactor_117 601% CPU（不在 cpu0–83，记内存带宽风险）；memory 段 32→28.78GiB、824 个非 key0–2999 memory key 被回收，未解释；`read_overhead_us` 本 build 等于 read_us，不能当独立段相加。产物 R51（73 文件/68.8 MB）。 |
 | E3-BD | 2026-11-09 | **第二组环境搭建**：node1=4090D client，node3=target+master；装 peermem、编译 Mooncake、建 target/RAID0/NoF、a/b memory、跑通 a/b/c/d 1/1 冒烟 | 待执行 | 目标：node1/node3 完全 ready 到能跑 a/b/c/d 1/1 4MB 冒烟（failed=0）。步骤：①只读查占用/盘/驱动；②node3 选 5×7TB 做 RAID0 strip64K（与第一组对齐），NoF listener 4457、master 50056/9006、metadata 8086；③node1 装 nvidia_peermem、编译 Mooncake/bench；④a/b memory 32GiB；⑤URMA/NoF 连通；⑥a/b/c/d 100-key 10s 冒烟；不跑全量、不改第一组 node2/4。 |
 | E3-BE | 2026-11-09 | **第七次测试第一步**：d 1/1 实测 transfer/copy 拆开；问题文档 `第七次测试/第七次测试_起点问题_20261109.md` | 已完成（回执已收） | **直接打点成功，非估算**：transfer mean **208.8/211.0/213.5**（P50 212/219/220；submit 3.2/3.2/4.1、wait 202.1/204.2/204.7）；copy=scatter **339.3/338.7/340.0**（P50 339/338/340；scatter_copy 335.9/335.6/336.1）；read/query/total 551.9–557.7/108.1–138.5/661.1–697.5。恒等式闭合（alloc+prep+get+scatter+free−sp_total=−1；read−get−scatter=+3.7~4.2，p99 5.0）。**剩余 gap 42.4–47.1 µs 全在 transfer wait**（208.8–213.5 vs 预期166.4）；submit/包装3–4、alloc/prep/free=0。iostat：15044 req→64.19 child op/req（64K strip）、5 盘各12071MiB、盘侧6.03 GiB/s vs client5.87（2.7%）。**归因：wait 是 64×64K 在5盘RAID0上的流水完成时间；要到166.4需约25.2 GB/s（≈23.5 GiB/s，回执单位需核对），超出该阵列在64K strip + 单请求并发的能力 → 阵列带宽边界，不是协议/软件开销。** 历史：第四次296.4→本轮低83–88；第六次估算214.5被实测证实（≤1.5）；copy 与 E3-AJ 336.3 吻合。 |
-| E3-BF | 2026-11-09 | **第七次测试第二步**：独立 host vs staging 基线复测（d 1/1，220k，node2/4）；不修改正在跑的 E3-BE | 已取消（E3-BE 直接打点已拿到 transfer/copy） | E3-BE 的 `MC_BENCH_STAGING_TIMING`/`PATH_TIMING` 直接输出 alloc/prep/get/scatter/free，无需 host/staging 差分；如已启动，跑完当前轮即停，不用补。仅保留其数值作历史参考：E3-AV host 214 / staging 556 / 差342。 |
+| E3-BF | 2026-11-09 | **第七次测试基线**：host vs staging 基线复测（d 1/1，220k，node2/4）；E3-BE 直接实测已完成，本臂只作交叉验证 | 待执行（用户要求基线对照） | E3-BE 结束后串行跑：H=`gpu_mode=host`（node4 DRAM buffer）3×60s；S=`gpu_mode=staging`（GPU HBM）3×60s；同 220k keys/target/master/窗口；两臂都开 target bdev trace，确认 per-64K 分布相同；输出 H.read（transfer 基线）、S.read、S.read−H.read（copy）；与 E3-BE 直接实测 transfer208.8–213.5/copy339、E3-AV host214/staging556/差342 对照；主结论仍用 E3-BE 直接打点；不跑全量/8MB/a/b/c/node1/3；不改 E3-BE。 |
 
 ---
 
@@ -3769,10 +3769,10 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 
 ---
 
-# E3-BF（已取消 · 2026-11-09）· 第七次测试第二步：host vs staging 基线复测
+# E3-BF（待执行 · 2026-11-09）· 第七次测试基线：host vs staging 交叉验证
 
-> **取消原因**：E3-BE 的 `MC_BENCH_STAGING_TIMING` / `MC_BENCH_STAGING_PATH_TIMING` 已直接输出 alloc/prep/get/scatter/free，transfer/copy 已有实测，不需要 host/staging 差分。
-> 如测试 agent 已启动 E3-BF，跑完当前轮即停，不用补；其数值只作历史参考（E3-AV host 214 / staging 556 / 差342）。
+> E3-BE 已直接实测 transfer/copy（208.8–213.5 / 339），本臂按用户要求做 host/staging 基线交叉验证；**主结论仍用 E3-BE 直接打点**。
+> 在 E3-BE 结束后串行跑；如已启动过，重新开始 H/S 两臂，确认同窗口/同 keys/target。
 
 > 背景：E3-AV 曾经测得 host read ≈214、staging read ≈556、差 ≈342 µs，判为 copy；但那不是 220k/当前第七次配置，而且 copy 是 host/staging 差值，不是单独计时。
 > **本任务独立于正在跑的 E3-BE，不修改 E3-BE；在 E3-BE 结束后串行跑，避免同 target 冲突。**
