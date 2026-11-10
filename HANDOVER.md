@@ -169,7 +169,8 @@
 | E3-BF | 2026-11-09 | **第七次测试基线**：host vs staging 交叉验证（d 1/1，220k，node2/4） | 已关闭（回执已收） | H host read mean **215.75**（P50 218/P99 239）；S staging read mean **553.76**（P50 553/P99 569）；**差值 copy = 338.01 mean / 335.0 P50**；total 差 337.88/340.0；query 差 −0.21；ops/req 64.02 vs 64.03。与 E3-BE 直接打点 transfer208.8–213.5/copy339、E3-AV 214/556/342 互证；target bdev 5 盘均分、两臂 IO 形态一致，差值归 H2D copy。**host read 215.75 vs E3-BE transfer 208.8–213.5 差 2–7 µs，主结论仍用 E3-BE 直接打点；本臂只作交叉验证。** 单位修正：25.21 GB/s=23.48 GiB/s。产物 R53（32 文件/19.84 MB）。 |
 | E3-BG | 2026-11-10 | **裸 SPDK 基线复测**：当前 target/220k 状态下，`spdk_nvme_perf` 4MB QD1 从 node2 target 读 220k×4MiB 到 node4 DRAM；与 Mooncake transfer 208.8–213.5 对照 | 已完成（回执已收；E3-BH 证明 r2 是模式 B，不是异常） | `-d 220000` 精确 220k IO/859.4GiB（target read_ops 14,080,000=220k×64、880,000MiB，5盘均分）；**E3-BH 证明 r1/r3=模式A、r2=模式B，B 是稳定交替模式，不能剔除**。E3-BG 全3轮：P50 189.44 / mean 218.42 / P90 288.85 / P99 477.01 / 17.89 GiB/s；A(r1/r3) 178.56/215.06，B(r2) 215.04/226.20。**P50 裸快 Mooncake，mean 裸不更快**；不能断言 Mooncake 有27–32协议开销。 |
 | E3-BH | 2026-11-10 | **裸 SPDK 复测**：同 target/220k，4MB QD1、220k IO；5 轮 + 窗口检查 | 已完成（回执已收；**4MB QD1 不是 Mooncake 同形态，不能用于对照**） | **裸 SPDK两态严格交替 B/A/B/A/B/A**（与 E3-BG 两次会话同序列）：**A 快态（r1/r3/r5）P50 178.77 / mean 215.26 / P90 313.17 / 18.14 GiB/s；B 慢态（r2/r4）P50 215.04 / mean 226.20 / P90 236.16 / 17.27**；全5轮 193.28/219.63/282.37/17.79。A/B 两簇不相交（<180µs 占比 A 53–59% vs B 0%；>240µs A 18–19% vs B 9–10%）；load/core idle/top 不随 A/B 交替、target IO 逐位相同 → **不是外部干扰/IO 形态**。**但严格交替可疑，更像每进程 hugepage/URMA 注册/设备资源交替的测试 artifact，不是系统两态；根因未定。且 4MB QD1 与 Mooncake 64K×4qpair 不是同形态，本结果只能作 4MB 单发参考，不能用于 Mooncake 对照。** 需 E3-BI 同形态重测。 |
-| E3-BI | 2026-11-10 | **裸 SPDK 同形态重测**：按 Mooncake transfer 的 64K I/O、4 qpair、在飞约26（QD≈6–7/核）重测；不跑4MB QD1 | 待执行 | target 4457、node4 DRAM；64K I/O、`-c 0xf`（4核/qpair）、QD 5/6/7/8 小扫描，匹配 Mooncake 在飞~26；总 **14,080,000 个 64K I/O=859.4GiB**（`-d` 按 per-thread 3,520,000 校验）；顺序 LBA；每 QD 3轮；记录 per-64K P50/mean/P90/P99、聚合 GiB/s、4MB 等效（4MiB/GiB/s）、target ops/req=64、in-flight；选最接近 Mooncake 形态的 QD；与 E3-BE transfer 208.8–213.5、E3-AP 64K×QD4×4 139.3/218、E3-AO 4MB QD1 181.7 对照但标明不同形态；不跑全量/8MB/a/b/c/node1/3。 |
+| E3-BI | 2026-11-10 | **裸 SPDK 同形态重测**：按 Mooncake transfer 的 64K I/O、4 qpair、在飞约26（QD≈6–7/核）重测；不跑4MB QD1 | 已取消（改用 urma_perf，转 E3-BK） | 用户决定直接用 `urma_perf` 测；本任务不执行。 |
+| E3-BK | 2026-11-10 | **urma_perf 基线（同机同 target）**：5SSD、stripe64K、b1T1；4MB/8MB + Mooncake 64K×4qpair 形态 | 待执行 | node4 initiator → node2 target 4457；编译/使用 e12b7cb `examples/nvme/urma_perf`；`-M cpu` + `URMA_PERF_REGION_REG=1`、`-T1 -b1`、`-w read`、`-t30`、`-n1 -g0 -l0`，`-o4M` 和 `-o8M` 各3轮；另跑 Mooncake 形态 `-o64K -T4 -b6/-b7` 各2–3轮；记录 P50/mean/P90/P99/GiB/s、target ops/req（4M=64、8M=128、64K=1）、5盘分布、in-flight；对照 Mooncake transfer 208.8–213.5、spdk_nvme_perf 4MB QD1、同事 b1T1；不改 target/strip/源码，不跑全量/node1/3。 |
 | E3-BJ | 2026-11-10 | **工具口径对齐（只收集/比较，不跑 benchmark）**：同事 B 的 `build/examples/urma_perf` vs 我们的 `build/bin/spdk_nvme_perf` | 已关闭（回执已收） | **同一层、不同程序**：urma_perf 就是我们 SPDK 树的 `examples/nvme/urma_perf`，NVMe-oF URMA initiator（`spdk_nvme_ns_cmd_read_ext`，必须带 subnqn），不是 raw URMA；`b1T1`=1 qpair×1在飞 = 我们 `-q1 -c0x1`；计时边界一致（不含连接/注册），不能解释 20+ µs。`-T`=worker/qpair数，`-b`=每worker在飞，`-M`=mem-type（cpu/posix/peermem/dmabuf），`REGION_REG=1`=整块注册跳过 per-I/O；**`-I/-C` 未知（四版 optstring 都没有，需他 commit 帮助）**。真正不能直接比：IO 8MB vs4MB、内存路径 cpu+整池 vs hugepage+shim、链路 node3→node1 6盘 vs node4→node2 5盘、SPDK 9b5cd59(drain-fix) vs e12b7cb、**NUMA 他全0 vs 我们 target reactor154–157(NUMA2)/盘0、client CPU0(NUMA0)/UB卡NUMA2**。更正 R55 peerB_param_compare 中“工具不同/四项不可设”的错误。产物 `第七次测试/工具口径对齐_20261110.md`。 |
 
 ---
@@ -4040,3 +4041,36 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 - 更正：R55 `peerB_param_compare.md` §二 D 初版“工具不同、-M/-I/-C/REGION_REG 四项不可设”错误；实际 `-M/-b/-T/REGION_REG` 对齐，只有 `-I/-C` 未知。
 - E3-BI（64K×4qpair 同形态）仍待执行；下一步建议：同机同 target 双工具交替（urma_perf `-M cpu`+REGION_REG vs spdk_nvme_perf），再做 NUMA 对齐 A/B。
 - 产物：`第七次测试/工具口径对齐_20261110.md`（243行/18KB）、更正后的 `peerB_param_compare.md`；台账 §92；索引 R56；无环境变更。
+
+---
+
+# E3-BK（待执行 · 2026-11-10）· urma_perf 同机同 target 基线
+
+> E3-BJ 已确认：`examples/nvme/urma_perf` 与 `spdk_nvme_perf` **同层**（NVMe-oF URMA initiator，必须带 subnqn），`b1T1`=1 qpair×1在飞；区别在工具/内存注册/IO大小/链路/commit/NUMA。
+> 用户决定：**直接用 `urma_perf` 测**；E3-BI（spdk_nvme_perf 64K）取消。
+
+## 一、环境/工具
+
+- node4 initiator → node2 target 4457；5SSD RAID0 stripe64K；target/master 不动。
+- 编译 **e12b7cb** 的 `examples/nvme/urma_perf`（源码在 `examples/nvme/urma_perf/`，当前未编译）；编译失败才回退用现有 `spdk_v2` 的 urma_perf，记录二进制 md5/commit 差异。
+- 环境：`URMA_PERF_REGION_REG=1`、`SPDK_URMA_CAPSULE_TRANSPORT=urma`、`SPDK_URMA_MAX_IO_SIZE=8388608`、`SPDK_URMA_DEV_NAME=udmac0d1e2`；
+  `-r 'trtype:URMA adrfam:IPv4 traddr:141.61.84.247 trsvcid:4457 subnqn:nqn.2026-01.io.spdk:urma-gpu-test'`、`-w read`、`-t 30`、`-n 1 -g 0 -l 0 -M cpu`。
+- `-I/-C` 未知，不设；b1T1 用 `-T 1 -b 1`。
+
+## 二、测试点
+
+1. **同事同点**：`-o 4M -T1 -b1` 和 `-o 8M -T1 -b1`，各 3×30s；`-M cpu` + `REGION_REG=1`。
+2. **Mooncake 形态**：`-o 64K -T4 -b6` 和 `-o 64K -T4 -b7`（4 qpair，在飞24/28，接近~26），各 2–3×30s；`-M cpu`。
+3. **注册路径对照（可选，时间够再做）**：`-o4M -T1 -b1 -M dmabuf` 3×30s，与 `-M cpu + REGION_REG` 对比，分离内存注册路径。
+
+## 三、记录/对照
+
+- 每轮：P50/mean/P90/P99/P999/Pmax、GiB/s、IO 数/wall、target `read_ops` 与 5 盘分布、ops/请求（4M=64、8M=128、64K=1）、in-flight（工具/日志）。
+- 对照：
+  - Mooncake transfer 208.8–213.5（4MB，4qpair/在飞~26）；
+  - 我们的 spdk_nvme_perf 4MB QD1（181.7/193.6，不同形态）；
+  - 同事 B 的 b1T1 4/8MB（若他能给数值，否则只列参数）；
+  - `-M cpu+REGION_REG` vs `-M dmabuf` 的差。
+- 结论只回答：同机同 target 下 urma_perf 的 b1T1/4MB、8MB、64K×4qpair 各是多少；与 Mooncake transfer 差多少；差异是否来自工具/注册路径/形态。
+- 结果：`测试相关资料/第七次测试结果/R57_20261110_d_urma_perf/`；本地 `D:\gds性能\第七次测试\`。
+- 不改 target/strip/源码；不跑全量/8MB 矩阵/a/b/c/node1/3；异常轮保留证据。
