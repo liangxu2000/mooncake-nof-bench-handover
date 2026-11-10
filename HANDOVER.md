@@ -168,7 +168,8 @@
 | E3-BE | 2026-11-09 | **第七次测试第一步**：d 1/1 实测 transfer/copy 拆开；问题文档 `第七次测试/第七次测试_起点问题_20261109.md` | 已完成（回执已收） | **直接打点成功，非估算**：transfer mean **208.8/211.0/213.5**（P50 212/219/220；submit 3.2/3.2/4.1、wait 202.1/204.2/204.7）；copy=scatter **339.3/338.7/340.0**（P50 339/338/340；scatter_copy 335.9/335.6/336.1）；read/query/total 551.9–557.7/108.1–138.5/661.1–697.5。恒等式闭合（alloc+prep+get+scatter+free−sp_total=−1；read−get−scatter=+3.7~4.2，p99 5.0）。**剩余 gap 42.4–47.1 µs 全在 transfer wait**（208.8–213.5 vs 预期166.4）；submit/包装3–4、alloc/prep/free=0。iostat：15044 req→64.19 child op/req（64K strip）、5 盘各12071MiB、盘侧6.03 GiB/s vs client5.87（2.7%）。**归因：wait 是 64×64K 在5盘RAID0上的流水完成时间；要到166.4需约25.2 GB/s（≈23.5 GiB/s，回执单位需核对），超出该阵列在64K strip + 单请求并发的能力 → 阵列带宽边界，不是协议/软件开销。** 历史：第四次296.4→本轮低83–88；第六次估算214.5被实测证实（≤1.5）；copy 与 E3-AJ 336.3 吻合。 |
 | E3-BF | 2026-11-09 | **第七次测试基线**：host vs staging 交叉验证（d 1/1，220k，node2/4） | 已关闭（回执已收） | H host read mean **215.75**（P50 218/P99 239）；S staging read mean **553.76**（P50 553/P99 569）；**差值 copy = 338.01 mean / 335.0 P50**；total 差 337.88/340.0；query 差 −0.21；ops/req 64.02 vs 64.03。与 E3-BE 直接打点 transfer208.8–213.5/copy339、E3-AV 214/556/342 互证；target bdev 5 盘均分、两臂 IO 形态一致，差值归 H2D copy。**host read 215.75 vs E3-BE transfer 208.8–213.5 差 2–7 µs，主结论仍用 E3-BE 直接打点；本臂只作交叉验证。** 单位修正：25.21 GB/s=23.48 GiB/s。产物 R53（32 文件/19.84 MB）。 |
 | E3-BG | 2026-11-10 | **裸 SPDK 基线复测**：当前 target/220k 状态下，`spdk_nvme_perf` 4MB QD1 从 node2 target 读 220k×4MiB 到 node4 DRAM；与 Mooncake transfer 208.8–213.5 对照 | 已完成（回执已收；E3-BH 证明 r2 是模式 B，不是异常） | `-d 220000` 精确 220k IO/859.4GiB（target read_ops 14,080,000=220k×64、880,000MiB，5盘均分）；**E3-BH 证明 r1/r3=模式A、r2=模式B，B 是稳定交替模式，不能剔除**。E3-BG 全3轮：P50 189.44 / mean 218.42 / P90 288.85 / P99 477.01 / 17.89 GiB/s；A(r1/r3) 178.56/215.06，B(r2) 215.04/226.20。**P50 裸快 Mooncake，mean 裸不更快**；不能断言 Mooncake 有27–32协议开销。 |
-| E3-BH | 2026-11-10 | **裸 SPDK 复测**：同 target/220k，4MB QD1、220k IO；5 轮 + 窗口检查 | 已完成（回执已收；**两态根因未定，不能当系统结论**） | **裸 SPDK两态严格交替 B/A/B/A/B/A**（与 E3-BG 两次会话同序列）：**A 快态（r1/r3/r5）P50 178.77 / mean 215.26 / P90 313.17 / 18.14 GiB/s；B 慢态（r2/r4）P50 215.04 / mean 226.20 / P90 236.16 / 17.27**；全5轮 193.28/219.63/282.37/17.79。A/B 两簇不相交（<180µs 占比 A 53–59% vs B 0%；>240µs A 18–19% vs B 9–10%）；load/core idle/top 不随 A/B 交替、target IO 逐位相同 → **不是外部干扰/IO 形态**。**但严格交替可疑，更像每进程 hugepage/URMA 注册/设备资源交替的测试 artifact，不是系统两态；根因未定，需逐轮资源指纹+固定 membind/URMA 设备+长跑拆分验证。** **P50 裸 A 178.77 vs Mooncake 212–220（快33–41）；mean 裸 A 215.26 vs 208.8–213.5（慢1.8–6.5）→ 方向仍相反，不能归因 Mooncake 27–32 协议开销**；E3-AO mean193.6 是“无长尾”的另一窗口，和当前差别在尾部。 |
+| E3-BH | 2026-11-10 | **裸 SPDK 复测**：同 target/220k，4MB QD1、220k IO；5 轮 + 窗口检查 | 已完成（回执已收；**4MB QD1 不是 Mooncake 同形态，不能用于对照**） | **裸 SPDK两态严格交替 B/A/B/A/B/A**（与 E3-BG 两次会话同序列）：**A 快态（r1/r3/r5）P50 178.77 / mean 215.26 / P90 313.17 / 18.14 GiB/s；B 慢态（r2/r4）P50 215.04 / mean 226.20 / P90 236.16 / 17.27**；全5轮 193.28/219.63/282.37/17.79。A/B 两簇不相交（<180µs 占比 A 53–59% vs B 0%；>240µs A 18–19% vs B 9–10%）；load/core idle/top 不随 A/B 交替、target IO 逐位相同 → **不是外部干扰/IO 形态**。**但严格交替可疑，更像每进程 hugepage/URMA 注册/设备资源交替的测试 artifact，不是系统两态；根因未定。且 4MB QD1 与 Mooncake 64K×4qpair 不是同形态，本结果只能作 4MB 单发参考，不能用于 Mooncake 对照。** 需 E3-BI 同形态重测。 |
+| E3-BI | 2026-11-10 | **裸 SPDK 同形态重测**：按 Mooncake transfer 的 64K I/O、4 qpair、在飞约26（QD≈6–7/核）重测；不跑4MB QD1 | 待执行 | target 4457、node4 DRAM；64K I/O、`-c 0xf`（4核/qpair）、QD 5/6/7/8 小扫描，匹配 Mooncake 在飞~26；总 **14,080,000 个 64K I/O=859.4GiB**（`-d` 按 per-thread 3,520,000 校验）；顺序 LBA；每 QD 3轮；记录 per-64K P50/mean/P90/P99、聚合 GiB/s、4MB 等效（4MiB/GiB/s）、target ops/req=64、in-flight；选最接近 Mooncake 形态的 QD；与 E3-BE transfer 208.8–213.5、E3-AP 64K×QD4×4 139.3/218、E3-AO 4MB QD1 181.7 对照但标明不同形态；不跑全量/8MB/a/b/c/node1/3。 |
 
 ---
 
@@ -3954,3 +3955,32 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 - 根因未定位：候选每条新进程 DPDK hugepage 物理落点/URMA 注册交替落两区（6048 total/1778 free）、或盘侧两态；未验证。
 - 未做：8MB/多 QD/多线程/随机 LBA/Mooncake 同窗口对照；tick 未校准；无源码 diff。
 - 产物：R55_20261110_d_bare_spdk_retest（49 文件/0.18 MB）；台账 §91；索引 R55。
+
+---
+
+# E3-BI（待执行 · 2026-11-10）· 裸 SPDK 同形态重测（64K I/O × 4 qpair，在飞~26）
+
+> 用户明确指出：**4MB QD1 不是 Mooncake 同形态**，E3-BG/BH 不能用于 Mooncake transfer 对照。
+> Mooncake d 的真实形态：target 每 4MB 拆 64×64KiB；client 4 qpair、在飞约 26 strip。裸 SPDK 必须按这个形态测。
+
+## 一、目标形态
+
+- target 4457、node4 DRAM；**64KiB I/O**、顺序 LBA。
+- **4 个 qpair / 4 核**：`-c 0xf`（或等价 4 核），每核一个 qpair；QD 用 **5/6/7/8 小扫描**，目标是让在飞 strip 接近 Mooncake 的 ~26（4×6=24、4×7=28）。
+- 总量：**220k×64 = 14,080,000 个 64K I/O = 859.4GiB**。
+  - `-d` 是 per thread（E3-BG 已验证）；4 核时每线程 **3,520,000**，总 14,080,000；用 target `read_ops` 校验（应为 14,080,000，不是 220k）。
+- 每 QD 3 轮；顺序 LBA 从头；不做 4MB QD1。
+
+## 二、测量/对照
+
+- 每轮记录：per-64K P50/mean/P90/P99/P99.9、聚合 GiB/s、总 IO、target `read_ops`/5盘分布、ops/请求=64、in-flight（工具/日志能给就给）。
+- **4MB 等效时延 = 4MiB ÷ 聚合 GiB/s**（例如 18GiB/s→~222µs），与 Mooncake transfer 208.8–213.5 对照；标明这是“吞吐等效”，不是单 4MB 请求 P50。
+- 同时给 per-64K 值，与 E3-AP 64K×QD4×4（139.3/218.0，4.47GiB/s）对照；E3-AO 4MB QD1（181.7/193.6）只作“不同形态”参考。
+- 选 QD 时以 in-flight≈26 为主，不只看吞吐；若 QD5–8 都不能匹配，记录实际 in-flight 并回报。
+- 异常轮/两态：保留证据，不静默剔除；如果仍出现 A/B 交替，先记录 URMA device、hugepage/NUMA、target qpair/core，再判断是不是进程资源 artifact。
+
+## 三、输出/限制
+
+- 结果：`测试相关资料/第七次测试结果/R56_20261110_d_bare_spdk_sameshape/`；本地 `D:\gds性能\第七次测试\`。
+- 结论只回答：同形态裸 SPDK 的 per-64K 和 4MB 等效时延是多少；与 Mooncake transfer 208.8–213.5 差多少；是否还在 A/B 两态。
+- 不跑 4MB QD1、全量、8MB、a/b/c、node1/node3；不改 target/master/strip/源码。
