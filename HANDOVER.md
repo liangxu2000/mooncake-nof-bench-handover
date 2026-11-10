@@ -165,8 +165,8 @@
 | E3-BB | 2026-11-09 | **只读环境盘点**：在 node1/node3 中找第二组测试环境的 RTX 4090；不跑 benchmark、不改环境 | 已关闭（回执已收） | **RTX 4090D 在 node1（141.61.84.245）**，1 卡 24564 MiB、Gen4 x16、NUMA0；**node3（141.61.84.149）无 GPU、11×7TB**，建议 client/GPU=node1 + target=node3。四场景：**b 具备、d 有条件（node3 当 target）、a/c 不具备（node1 无 nvidia_peermem）**。缺口：node1 无 Mooncake build、本机仅 1 块 7TB 非测试盘；node1 他人占用（who=16/load14.43）需授权；URMA `/dev/uburma` 暴露不全（node1 只 udmac0d1e2，node3 只 bonding_dev_0）。零环境变更。产物 `第二组测试环境/环境盘点_20261109.md`。 |
 | E3-BC | 2026-11-09 | **第六次测试最终结果**：node2/node4，4MB a/b/c/d 全量（16 格）+ 1/1 打点拆解；node1/node3 不动 | 已完成（回执已收） | 16 格 + 52 轮全部 failed=0；18:55:39 ALL DONE。**a/b=3000 keys（回绕 45–65×/37–59×）、c/d=220k（不回绕）**。clean 1/1 avg/P50/P99：a 421.8/409.6/446.5；b 531.8/532.5/557.0；c 465.0/462.9/499.7；d 657.4/655.4/688.1 µs。a/b 1/1 变慢 = 纯 query（+53.3/+50.8）；c/d 220k 省回 query（−2.3/−25.2）。**1/1 诊断**：a query98.3+read325.0、b 99.7+438.5、c 100.9+372.6、d 104.5+551.5，残差 0.9–4 闭合。**风险**：1/16 c/d +2.0%/+4.3% 未定；d 16/16 尾部恶化（P99 559,940/P999 1,220,543/Max 1,663,753 vs R36 463,471/838,861/1,167,962）；`MC_STORE_UB_POLL_SLEEP_US=0` 四并发统一（R29 证 16 线程无差）；node4 他人 reactor_117 601% CPU（不在 cpu0–83，记内存带宽风险）；memory 段 32→28.78GiB、824 个非 key0–2999 memory key 被回收，未解释；`read_overhead_us` 本 build 等于 read_us，不能当独立段相加。产物 R51（73 文件/68.8 MB）。 |
 | E3-BD | 2026-11-09 | **第二组环境搭建**：node1=4090D client，node3=target+master；装 peermem、编译 Mooncake、建 target/RAID0/NoF、a/b memory、跑通 a/b/c/d 1/1 冒烟 | 待执行 | 目标：node1/node3 完全 ready 到能跑 a/b/c/d 1/1 4MB 冒烟（failed=0）。步骤：①只读查占用/盘/驱动；②node3 选 5×7TB 做 RAID0 strip64K（与第一组对齐），NoF listener 4457、master 50056/9006、metadata 8086；③node1 装 nvidia_peermem、编译 Mooncake/bench；④a/b memory 32GiB；⑤URMA/NoF 连通；⑥a/b/c/d 100-key 10s 冒烟；不跑全量、不改第一组 node2/4。 |
-| E3-BE | 2026-11-09 | **第七次测试第一步**：d 1/1 实测 transfer/copy 拆开；问题文档 `第七次测试/第七次测试_起点问题_20261109.md` | 待执行 | 只做 d 4MB 1/1，node2/4，master node2，target4457，220k keys/warmup45/start0；**正式两臂：H=`gpu_mode=host`（node4 DRAM buffer，无 copy）3×60s，S=`gpu_mode=staging`（正常 d）3×60s，同 keys/target/窗口 + target bdev trace；H.read=transfer 基线，S.read−H.read=copy**；另跑诊断 sample1+`MC_BENCH_STAGING_TIMING=1`+`MC_BENCH_STAGING_PATH_TIMING=1`，有直接 transfer_us/copy_us 就优先用；必须给实际值+恒等式闭合，禁止 read−copy 估算冒充实测；不跑全量/8MB/a/b/c/node1/3。 |
-| E3-BF | 2026-11-09 | **第七次测试第二步**：独立 host vs staging 基线复测（d 1/1，220k，node2/4）；不修改正在跑的 E3-BE | 待执行 | 在 E3-BE 结束后、同环境串行跑：H=`gpu_mode=host`（node4 DRAM buffer）3×60s；S=`gpu_mode=staging`（GPU HBM）3×60s；同 220k keys/target/master/窗口；两臂都开 target bdev trace，确认 per-64K 分布相同；输出 H.read（transfer 基线）、S.read、S.read−H.read（copy）；与 E3-AV 的 host 214 / staging 556 / 差342 对照；不跑全量/8MB/a/b/c/node1/3；不改 E3-BE。 |
+| E3-BE | 2026-11-09 | **第七次测试第一步**：d 1/1 实测 transfer/copy 拆开；问题文档 `第七次测试/第七次测试_起点问题_20261109.md` | 已完成（回执已收） | **直接打点成功，非估算**：transfer mean **208.8/211.0/213.5**（P50 212/219/220；submit 3.2/3.2/4.1、wait 202.1/204.2/204.7）；copy=scatter **339.3/338.7/340.0**（P50 339/338/340；scatter_copy 335.9/335.6/336.1）；read/query/total 551.9–557.7/108.1–138.5/661.1–697.5。恒等式闭合（alloc+prep+get+scatter+free−sp_total=−1；read−get−scatter=+3.7~4.2，p99 5.0）。**剩余 gap 42.4–47.1 µs 全在 transfer wait**（208.8–213.5 vs 预期166.4）；submit/包装3–4、alloc/prep/free=0。iostat：15044 req→64.19 child op/req（64K strip）、5 盘各12071MiB、盘侧6.03 GiB/s vs client5.87（2.7%）。**归因：wait 是 64×64K 在5盘RAID0上的流水完成时间；要到166.4需约25.2 GB/s（≈23.5 GiB/s，回执单位需核对），超出该阵列在64K strip + 单请求并发的能力 → 阵列带宽边界，不是协议/软件开销。** 历史：第四次296.4→本轮低83–88；第六次估算214.5被实测证实（≤1.5）；copy 与 E3-AJ 336.3 吻合。 |
+| E3-BF | 2026-11-09 | **第七次测试第二步**：独立 host vs staging 基线复测（d 1/1，220k，node2/4）；不修改正在跑的 E3-BE | 已取消（E3-BE 直接打点已拿到 transfer/copy） | E3-BE 的 `MC_BENCH_STAGING_TIMING`/`PATH_TIMING` 直接输出 alloc/prep/get/scatter/free，无需 host/staging 差分；如已启动，跑完当前轮即停，不用补。仅保留其数值作历史参考：E3-AV host 214 / staging 556 / 差342。 |
 
 ---
 
@@ -3769,7 +3769,10 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 
 ---
 
-# E3-BF（待执行 · 2026-11-09）· 第七次测试第二步：host vs staging 基线复测
+# E3-BF（已取消 · 2026-11-09）· 第七次测试第二步：host vs staging 基线复测
+
+> **取消原因**：E3-BE 的 `MC_BENCH_STAGING_TIMING` / `MC_BENCH_STAGING_PATH_TIMING` 已直接输出 alloc/prep/get/scatter/free，transfer/copy 已有实测，不需要 host/staging 差分。
+> 如测试 agent 已启动 E3-BF，跑完当前轮即停，不用补；其数值只作历史参考（E3-AV host 214 / staging 556 / 差342）。
 
 > 背景：E3-AV 曾经测得 host read ≈214、staging read ≈556、差 ≈342 µs，判为 copy；但那不是 220k/当前第七次配置，而且 copy 是 host/staging 差值，不是单独计时。
 > **本任务独立于正在跑的 E3-BE，不修改 E3-BE；在 E3-BE 结束后串行跑，避免同 target 冲突。**
@@ -3804,3 +3807,26 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 ## 四、不做
 
 - 不跑全量/8MB/a/b/c；不碰 node1/node3；不改 target/master/端口/源码；不改 E3-BE；不写交付表。
+
+## 回执（2026-11-09，已收）
+
+**直接打点成功，非估算；transfer/copy 已拆开。E3-BF host/staging 差分不再需要（取消）。**
+
+| 项 | 3 轮 mean | P50 |
+| --- | --- | --- |
+| transfer = `staging_path.get_us`（`client_->Get()`） | **208.8 / 211.0 / 213.5** | 212 / 219 / 220 |
+| ├ submit | 3.2 / 3.2 / 4.1 | 3 / 3 / 4 |
+| └ wait | 202.1 / 204.2 / 204.7 | 207 / 213 / 211 |
+| copy = `scatter_us`（H2D） | **339.3 / 338.7 / 340.0** | 339 / 338 / 340 |
+| 交叉 `scatter_copy.copy_us` | 335.9 / 335.6 / 336.1 | 336 / 336 / 336 |
+| read / query / total | 551.9–557.7 / 108.1–138.5 / 661.1–697.5 | — |
+
+- **剩余 42.4–47.1 µs 全在 transfer wait**（208.8–213.5 vs 预期 166.4）；submit 只占 3–4，Get 包装 3–4，alloc/prep/free 恒 0。
+- 恒等式闭合：`alloc+prep+get+scatter+free − sp_total = −0.99/−0.98/−1.04`；`read − get − scatter = +3.76/+3.73/+4.18`（p99 5.0）→ 满足残差 ≤5。
+- iostat：10 s 15,044 请求 → 64.19 child op/请求（64K strip）；5 盘各 12,071 MiB；盘侧 6.03 GiB/s vs client 5.87（差 2.7%）。
+- **归因：wait 202–205 µs 是 64×64 KiB 在 5 盘 RAID0 上流水的完成时间；要把 transfer 压到 166.4，等效约 25.2 GB/s（≈23.5 GiB/s，回执写“GiB/s”单位需核对），超出该阵列在 64K strip + 单请求并发下的能力 → 阵列带宽边界，不是协议/软件段开销。**
+- 历史：第四次 transfer 296.4 → 本轮低 83–88；第六次估算 214.5 被实测证实（≤1.5）；copy 与 E3-AJ 336.3 吻合。
+- **外部破坏/恢复**：node2 6 块盘在 10:45 被他人从 vfio-pci 解绑，Raid0 失效；确认 5 盘无 mount/holders 后重新绑 vfio、运行时 `attach×5 → bdev_raid_create -z 64 → 重建 ns1`（target 未重启）；num_blocks/block_size/nsid/listener 与原值一致，10 s 冒烟 P50 655.36 与 R51 逐位相同，数据完好。
+- 干扰：node4 他人 reactor_117 601.6%、cc1plus 100%、mooncake_client 100%；我方核 0–7 idle 91.5–100%；diag r2/r3 query 108→138，clean P50 仍 639–647。
+- 偏差：clean 6.09/6.12/6.07 GiB/s；诊断 5.87/5.60/5.57（failed=0）；诊断开销 +3.7%/+8.7%/+9.4%，后两轮额外部分来自干扰。
+- 产物：`R52_20261109_d_transfer_copy/`（26 文件/25.71 MB）；台账 §88；索引 R52；无源码 diff，target/master/client 未重启。
