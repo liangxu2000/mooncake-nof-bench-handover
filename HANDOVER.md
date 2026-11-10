@@ -167,6 +167,7 @@
 | E3-BD | 2026-11-09 | **第二组环境搭建**：node1=4090D client，node3=target+master；装 peermem、编译 Mooncake、建 target/RAID0/NoF、a/b memory、跑通 a/b/c/d 1/1 冒烟 | 待执行 | 目标：node1/node3 完全 ready 到能跑 a/b/c/d 1/1 4MB 冒烟（failed=0）。步骤：①只读查占用/盘/驱动；②node3 选 5×7TB 做 RAID0 strip64K（与第一组对齐），NoF listener 4457、master 50056/9006、metadata 8086；③node1 装 nvidia_peermem、编译 Mooncake/bench；④a/b memory 32GiB；⑤URMA/NoF 连通；⑥a/b/c/d 100-key 10s 冒烟；不跑全量、不改第一组 node2/4。 |
 | E3-BE | 2026-11-09 | **第七次测试第一步**：d 1/1 实测 transfer/copy 拆开；问题文档 `第七次测试/第七次测试_起点问题_20261109.md` | 已完成（回执已收） | **直接打点成功，非估算**：transfer mean **208.8/211.0/213.5**（P50 212/219/220；submit 3.2/3.2/4.1、wait 202.1/204.2/204.7）；copy=scatter **339.3/338.7/340.0**（P50 339/338/340；scatter_copy 335.9/335.6/336.1）；read/query/total 551.9–557.7/108.1–138.5/661.1–697.5。恒等式闭合（alloc+prep+get+scatter+free−sp_total=−1；read−get−scatter=+3.7~4.2，p99 5.0）。**剩余 gap 42.4–47.1 µs 全在 transfer wait**（208.8–213.5 vs 预期166.4）；submit/包装3–4、alloc/prep/free=0。iostat：15044 req→64.19 child op/req（64K strip）、5 盘各12071MiB、盘侧6.03 GiB/s vs client5.87（2.7%）。**归因：wait 是 64×64K 在5盘RAID0上的流水完成时间；要到166.4需约25.2 GB/s（≈23.5 GiB/s，回执单位需核对），超出该阵列在64K strip + 单请求并发的能力 → 阵列带宽边界，不是协议/软件开销。** 历史：第四次296.4→本轮低83–88；第六次估算214.5被实测证实（≤1.5）；copy 与 E3-AJ 336.3 吻合。 |
 | E3-BF | 2026-11-09 | **第七次测试基线**：host vs staging 交叉验证（d 1/1，220k，node2/4） | 已关闭（回执已收） | H host read mean **215.75**（P50 218/P99 239）；S staging read mean **553.76**（P50 553/P99 569）；**差值 copy = 338.01 mean / 335.0 P50**；total 差 337.88/340.0；query 差 −0.21；ops/req 64.02 vs 64.03。与 E3-BE 直接打点 transfer208.8–213.5/copy339、E3-AV 214/556/342 互证；target bdev 5 盘均分、两臂 IO 形态一致，差值归 H2D copy。**host read 215.75 vs E3-BE transfer 208.8–213.5 差 2–7 µs，主结论仍用 E3-BE 直接打点；本臂只作交叉验证。** 单位修正：25.21 GB/s=23.48 GiB/s。产物 R53（32 文件/19.84 MB）。 |
+| E3-BG | 2026-11-10 | **裸 SPDK 基线复测**：当前 target/220k 状态下，`spdk_nvme_perf` 4MB QD1 从 node2 target 读 220k×4MiB 到 node4 DRAM；与 Mooncake transfer 208.8–213.5 对照 | 待执行 | 串行跑；target 4457；4MB QD1、顺序 LBA、node4 DRAM；优先 `--io-count=220000`（若支持），否则限制时长≈859.4GiB/实测吞吐（约40–45s）；3 轮；记录 P50/mean/P90/P99、IO 数、LBA 范围；对比 E3-AO 181.7/193.6、Mooncake transfer 208.8–213.5；若工具无 LBA/IO 限制，按 45s 跑并在回执说明；不跑全量/8MB/a/b/c/node1/3。 |
 
 ---
 
@@ -3850,3 +3851,36 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 - 单位修正：25.2 GiB/s → **25.21 GB/s = 23.48 GiB/s**（4 MiB/166.4 µs）；已改 ab_table、台账 §88.2、INDEX R52 三处。
 - 未做：全量/8MB/16 并发/stripe；`read_latency_ticks` 未校准；`--verify=false`；无源码 diff，未动 node1/node3。
 - 产物：R53_20261109_d_host_staging_baseline（32 文件/19.84 MB）；台账 §89；索引 R53。
+
+---
+
+# E3-BG（待执行 · 2026-11-10）· 裸 SPDK 基线：当前 target/220k 状态下读 859.4GiB
+
+> 目的：用裸 SPDK 在同一 target、同一 220k key 状态、同一 4MB QD1 下测 SSD→node4 DRAM，回答“Mooncake transfer 208.8–213.5 vs 裸 SPDK 181.7/193.6 的约 27–32 µs 差是不是协议/客户端开销”。
+> 只做这一段，不跑 Mooncake、不跑全量、8MB、a/b/c、node1/node3。
+
+## 一、固定口径
+
+- 串行跑；node4 initiator，node2 target 4457；target 当前 220k keys 状态（R51/R52 留下的数据），master 不参与。
+- `spdk_nvme_perf` 4MB、QD=1、read、顺序 LBA、node4 DRAM；与 E3-AO 同工具/同参数，只把端口 4421→4457。
+- 目标读取量：220k × 4 MiB = **859.4 GiB**。
+  - 优先 `--io-count=220000`（或等价计数参数）；若该 build 不支持，用 `--time` 限制到约 40–45s（按实测 ~20 GiB/s 估算）。
+  - 若工具支持 LBA 起点/长度，读 LBA 0..859.4GiB；不支持就从头顺序读，记录实际覆盖范围。
+- 3 轮，每轮清日志；记录 iostat/ target 侧状态；确保没有 Mooncake bench 同时跑。
+- 不改 target/master/端口/strip；无源码 diff；不碰 node1/node3。
+
+## 二、输出
+
+- 每轮/合并：P50/mean/P90/P99/P999/Pmax、IO 数、读取 GiB、实际 LBA 范围、GiB/s、failed。
+- 对照：
+  - E3-AO 裸 SPDK 4MB QD1：181.7/193.6、20.2 GiB/s；
+  - E3-BE Mooncake transfer：208.8–213.5 mean / P50 212–220；
+  - 差值：裸 vs Mooncake = ? µs。
+- 结论只回答：同 target/220k 状态下，裸 SPDK transfer 是多少；Mooncake 的 27–32 µs 差是否仍在；若裸 SPDK 也接近 208，则 target/阵列已是极限；若仍是 181，则差距在 Mooncake/客户端路径。
+- 结果：`测试相关资料/第七次测试结果/R54_20261110_d_bare_spdk/`；本地 `D:\gds性能\第七次测试\`。
+
+## 三、注意
+
+- 如果该 `spdk_nvme_perf` build 无 LBA 起点/IO 计数，**不要伪造 220k I/O**；用时间限制并明确写“覆盖范围近似”，不要把它当精确同范围。
+- `--iova-mode=va`、`LD_PRELOAD=urma_dmabuf_shim.so` 等沿用 E3-AO 成功命令；端口改 4457。
+- 任何 failed>0/STUCK/盘被他人解绑 → 停、回报；不要清盘。
