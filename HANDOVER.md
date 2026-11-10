@@ -170,7 +170,7 @@
 | E3-BG | 2026-11-10 | **裸 SPDK 基线复测**：当前 target/220k 状态下，`spdk_nvme_perf` 4MB QD1 从 node2 target 读 220k×4MiB 到 node4 DRAM；与 Mooncake transfer 208.8–213.5 对照 | 已完成（回执已收；E3-BH 证明 r2 是模式 B，不是异常） | `-d 220000` 精确 220k IO/859.4GiB（target read_ops 14,080,000=220k×64、880,000MiB，5盘均分）；**E3-BH 证明 r1/r3=模式A、r2=模式B，B 是稳定交替模式，不能剔除**。E3-BG 全3轮：P50 189.44 / mean 218.42 / P90 288.85 / P99 477.01 / 17.89 GiB/s；A(r1/r3) 178.56/215.06，B(r2) 215.04/226.20。**P50 裸快 Mooncake，mean 裸不更快**；不能断言 Mooncake 有27–32协议开销。 |
 | E3-BH | 2026-11-10 | **裸 SPDK 复测**：同 target/220k，4MB QD1、220k IO；5 轮 + 窗口检查 | 已完成（回执已收；**4MB QD1 不是 Mooncake 同形态，不能用于对照**） | **裸 SPDK两态严格交替 B/A/B/A/B/A**（与 E3-BG 两次会话同序列）：**A 快态（r1/r3/r5）P50 178.77 / mean 215.26 / P90 313.17 / 18.14 GiB/s；B 慢态（r2/r4）P50 215.04 / mean 226.20 / P90 236.16 / 17.27**；全5轮 193.28/219.63/282.37/17.79。A/B 两簇不相交（<180µs 占比 A 53–59% vs B 0%；>240µs A 18–19% vs B 9–10%）；load/core idle/top 不随 A/B 交替、target IO 逐位相同 → **不是外部干扰/IO 形态**。**但严格交替可疑，更像每进程 hugepage/URMA 注册/设备资源交替的测试 artifact，不是系统两态；根因未定。且 4MB QD1 与 Mooncake 64K×4qpair 不是同形态，本结果只能作 4MB 单发参考，不能用于 Mooncake 对照。** 需 E3-BI 同形态重测。 |
 | E3-BI | 2026-11-10 | **裸 SPDK 同形态重测**：按 Mooncake transfer 的 64K I/O、4 qpair、在飞约26（QD≈6–7/核）重测；不跑4MB QD1 | 待执行 | target 4457、node4 DRAM；64K I/O、`-c 0xf`（4核/qpair）、QD 5/6/7/8 小扫描，匹配 Mooncake 在飞~26；总 **14,080,000 个 64K I/O=859.4GiB**（`-d` 按 per-thread 3,520,000 校验）；顺序 LBA；每 QD 3轮；记录 per-64K P50/mean/P90/P99、聚合 GiB/s、4MB 等效（4MiB/GiB/s）、target ops/req=64、in-flight；选最接近 Mooncake 形态的 QD；与 E3-BE transfer 208.8–213.5、E3-AP 64K×QD4×4 139.3/218、E3-AO 4MB QD1 181.7 对照但标明不同形态；不跑全量/8MB/a/b/c/node1/3。 |
-| E3-BJ | 2026-11-10 | **工具口径对齐（只收集/比较，不跑 benchmark）**：同事 B 的 `build/examples/urma_perf` vs 我们的 `build/bin/spdk_nvme_perf` | 待执行 | 获取同事 B 的 urma_perf 仓库/commit/`--help`/源码、目标是否 NVMe-oF namespace 还是 raw URMA、`-M/-I/-C/URMA_PERF_REGION_REG` 语义、8MB/b1T1/30s、target 配置；查我们 spdk_nvme_perf 的 commit/help、e12b7cb 是否含 urma_perf；逐项对照（工具层、IO大小、qpair/QD/in-flight、注册方式、NUMA、target commit、链路）；同时确认我们 target reactor NUMA2/盘 NUMA0、client CPU0/UB卡 NUMA2 vs 同事全 NUMA0；输出 `第七次测试/工具口径对齐_20261110.md`；不改环境/不跑测试。 |
+| E3-BJ | 2026-11-10 | **工具口径对齐（只收集/比较，不跑 benchmark）**：同事 B 的 `build/examples/urma_perf` vs 我们的 `build/bin/spdk_nvme_perf` | 已关闭（回执已收） | **同一层、不同程序**：urma_perf 就是我们 SPDK 树的 `examples/nvme/urma_perf`，NVMe-oF URMA initiator（`spdk_nvme_ns_cmd_read_ext`，必须带 subnqn），不是 raw URMA；`b1T1`=1 qpair×1在飞 = 我们 `-q1 -c0x1`；计时边界一致（不含连接/注册），不能解释 20+ µs。`-T`=worker/qpair数，`-b`=每worker在飞，`-M`=mem-type（cpu/posix/peermem/dmabuf），`REGION_REG=1`=整块注册跳过 per-I/O；**`-I/-C` 未知（四版 optstring 都没有，需他 commit 帮助）**。真正不能直接比：IO 8MB vs4MB、内存路径 cpu+整池 vs hugepage+shim、链路 node3→node1 6盘 vs node4→node2 5盘、SPDK 9b5cd59(drain-fix) vs e12b7cb、**NUMA 他全0 vs 我们 target reactor154–157(NUMA2)/盘0、client CPU0(NUMA0)/UB卡NUMA2**。更正 R55 peerB_param_compare 中“工具不同/四项不可设”的错误。产物 `第七次测试/工具口径对齐_20261110.md`。 |
 
 ---
 
@@ -4028,3 +4028,15 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 - 不要猜 `urma_perf` 的参数含义；拿不到 help/source 就标“未知”。
 - 不改 target/端口/strip/源码，不跑全量；node1/node3 不碰。
 - 结果：`D:\gds性能\第七次测试\工具口径对齐_20261110.md`（本地）；测试侧可放 `测试相关资料/第七次测试结果/工具口径对齐_20261110.md`。
+
+## 回执（2026-11-10，已收）
+
+**结论：同一层、不同程序。**
+
+- 同事 B 的 `urma_perf` 就是我们 SPDK 树的 **`examples/nvme/urma_perf`**（Huawei 2026，含 Yin/Yida 修改）；它用 `spdk_nvme_ns_cmd_read_ext/write_ext` 向 target namespace 发标准 NVMe Read/Write，**必须带 subnqn**，是 NVMe-oF URMA initiator，不是 raw URMA 内存拷贝。
+- **`b1T1` = 1 qpair × 1 在飞 = 我们 `-q1 -c0x1`**；延迟=`completion_tick − submit_tsc`，从所有 qpair 就绪+整池注册+verify 之后开始，**不含连接/注册，与 spdk_nvme_perf 同边界，不能解释 20+ µs**。
+- 参数：`-T` worker/qpair 数；`-b` 每 worker 在飞；`-M` mem-type（cpu/posix/peermem/dmabuf）；`URMA_PERF_REGION_REG=1` 整块注册、跳过 per-I/O；仅 cpu/posix/peermem 生效。**`-I/-C` 四版 optstring 都没有，未知；需同事 commit 9b5cd59 的 help。**
+- 真正不能直接比：**IO 8MB vs 4MB；内存 cpu+整池 vs hugepage+shim；链路 node3→node1 6盘 vs node4→node2 5盘；SPDK 9b5cd59(drain-fix) vs e12b7cb；NUMA 他全 NUMA0 vs 我们 target reactor 154–157(NUMA2)/盘 NUMA0、client CPU0(NUMA0)/UB 卡 NUMA2。**
+- 更正：R55 `peerB_param_compare.md` §二 D 初版“工具不同、-M/-I/-C/REGION_REG 四项不可设”错误；实际 `-M/-b/-T/REGION_REG` 对齐，只有 `-I/-C` 未知。
+- E3-BI（64K×4qpair 同形态）仍待执行；下一步建议：同机同 target 双工具交替（urma_perf `-M cpu`+REGION_REG vs spdk_nvme_perf），再做 NUMA 对齐 A/B。
+- 产物：`第七次测试/工具口径对齐_20261110.md`（243行/18KB）、更正后的 `peerB_param_compare.md`；台账 §92；索引 R56；无环境变更。
