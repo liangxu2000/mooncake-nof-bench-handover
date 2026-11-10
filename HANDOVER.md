@@ -164,14 +164,14 @@
 | E3-BA | 2026-11-09 | **第六次 A/B 补 100-key 臂（缩短版）**：只跑 c/d 1/1，与 R49 200k 同窗口/同采样；200k 不重跑 | 已关闭（回执已收） | 同 master node2、同窗口、sample0.1：**100-key 比 200k 慢**。c：avg 531.02/P50 491.52/P90 622.59/P99 765.96 vs 476.45/475.13/487.42/503.81 → ΔP50 +16.4（+3.4%，噪声内）、ΔP99 +262.2（+52.0%）、Δavg +54.6（+11.5%）。d：771.74/720.89/958.46/1097.73 vs 657.63/663.55/688.13/720.89 → **ΔP50 +57.3（+8.6%，>5% 成立）**、ΔP99 +376.8（+52.3%）、Δavg +114.1（+17.4%）。100-key 回绕 c≈1148×/1113×、d≈780×/776×；key0–99 复用未重写。**推翻 E3-AZ 的“P50 涨全是 query、数据面不变”推断**：同 master 下仅 key 数就让 d P50 +57.3、P99 +52%；E3-AZ 的旧 P50/P99 是反推值，不能再用。 |
 | E3-BB | 2026-11-09 | **只读环境盘点**：在 node1/node3 中找第二组测试环境的 RTX 4090；不跑 benchmark、不改环境 | 已关闭（回执已收） | **RTX 4090D 在 node1（141.61.84.245）**，1 卡 24564 MiB、Gen4 x16、NUMA0；**node3（141.61.84.149）无 GPU、11×7TB**，建议 client/GPU=node1 + target=node3。四场景：**b 具备、d 有条件（node3 当 target）、a/c 不具备（node1 无 nvidia_peermem）**。缺口：node1 无 Mooncake build、本机仅 1 块 7TB 非测试盘；node1 他人占用（who=16/load14.43）需授权；URMA `/dev/uburma` 暴露不全（node1 只 udmac0d1e2，node3 只 bonding_dev_0）。零环境变更。产物 `第二组测试环境/环境盘点_20261109.md`。 |
 | E3-BC | 2026-11-09 | **第六次测试最终结果**：node2/node4，4MB a/b/c/d 全量（16 格）+ 1/1 打点拆解；node1/node3 不动 | 已完成（回执已收） | 16 格 + 52 轮全部 failed=0；18:55:39 ALL DONE。**a/b=3000 keys（回绕 45–65×/37–59×）、c/d=220k（不回绕）**。clean 1/1 avg/P50/P99：a 421.8/409.6/446.5；b 531.8/532.5/557.0；c 465.0/462.9/499.7；d 657.4/655.4/688.1 µs。a/b 1/1 变慢 = 纯 query（+53.3/+50.8）；c/d 220k 省回 query（−2.3/−25.2）。**1/1 诊断**：a query98.3+read325.0、b 99.7+438.5、c 100.9+372.6、d 104.5+551.5，残差 0.9–4 闭合。**风险**：1/16 c/d +2.0%/+4.3% 未定；d 16/16 尾部恶化（P99 559,940/P999 1,220,543/Max 1,663,753 vs R36 463,471/838,861/1,167,962）；`MC_STORE_UB_POLL_SLEEP_US=0` 四并发统一（R29 证 16 线程无差）；node4 他人 reactor_117 601% CPU（不在 cpu0–83，记内存带宽风险）；memory 段 32→28.78GiB、824 个非 key0–2999 memory key 被回收，未解释；`read_overhead_us` 本 build 等于 read_us，不能当独立段相加。产物 R51（73 文件/68.8 MB）。 |
-| E3-BD | 2026-11-09 | **第二组环境搭建**：node1=4090D client，node3=target+master；装 peermem、编译 Mooncake、建 target/RAID0/NoF、a/b memory、跑通 a/b/c/d 1/1 冒烟 | **当前执行（2026-11-10；node2/4 被占用，切第二组）** | 目标：node1/node3 完全 ready 到能跑 a/b/c/d 1/1 4MB 冒烟（failed=0）。步骤：①只读查占用/盘/驱动；②node3 选 5×7TB 做 RAID0 strip64K（与第一组对齐），NoF listener 4457、master 50056/9006、metadata 8086；③node1 装 nvidia_peermem、编译 Mooncake/bench；④a/b memory 32GiB；⑤URMA/NoF 连通；⑥a/b/c/d 100-key 10s 冒烟；不跑全量、不改第一组 node2/4。 |
+| E3-BD | 2026-11-09 | **第二组环境搭建**：node1=4090D client，node3=target+master；装 peermem、编译 Mooncake、建 target/RAID0/NoF、a/b memory、跑通 a/b/c/d 1/1 冒烟 | 已完成（回执已收；b 通 + NoF 数据面通，a/c/d blocked） | 第二组已搭到「b 通 + NoF 数据面通」。**node3**：target 655860（`rt_spdk/nvmf_tgt` md5 `e7440ae0…`、`-m 0xf00` 核 8-11、`-s 4096`、sock `/var/tmp/spdk_n3.sock`）4457 在听；Raid0 num_blocks 75014659200 / strip64K / 512 / nsid1 / 5/5 online，**与第一组 node2 逐位相同**；master 655980（50056/9006/8086）；client 656162（root、32GiB、`:50156`、segment `node3:12574`）；`nof_register` succeeded、`master_nof_allocated_bytes=419430400`；a/b+c/d 各 100 keys 预填 failed=0、`master_key_count=200`。**冒烟**：b ✅ `effective_path=ub/staging` rc=0 Avg 378.71/P50 376.83/P90 385.02/P99 466.94（与第一组 b 378.45/372.74 同量级）；NoF+host ✅ rc=0 `nof/host` Avg 436.69/P50 327.68；**a/c ❌ blocked** `register_buffer failed ret=-600`（URMA Unknown error 2048）；**d ❌ blocked** `cuMemGetHandleForAddressRange rc=801`→peermem 回落→NoF whole-pool registration failed rc=-2048。**根因**：node1 `udma`=262144（stub，无 P2P），GPU 版应 270336；本机唯一 GPU 版 udma.ko vermagic `6.6.0-netlab_pcie_ub_compat+` 与内核 `6.6.0-159.4.2.153…oe2403sp4` 不匹配；**rmmod 会打断同事 target/client（ubcore 被 5 个模块共用），未动**。磁盘避开同事：同事 nvmf_tgt(535512,:4420,`/home/yin/nof/spdk`) 占 21,22,28,a1,a2；本轮取 29,2a(NUMA0)+91,92,a3(NUMA2)，取用前逐盘确认 mount/holders/fuser 空，a4 绑后已还原 nvme。环境变更：node3 hugepages 4640→7168（+5GB）、5 盘 vfio、我方 3 进程+5 端口；回退见产物 md§五。**未动他人**：node3 同事 master(483112)/target(535512) 及 4420·50736·9205·8637·24789 原样；node1 同事 master(115065,50058/9008)/target(111900) 原样；第一组 node2/4 未碰；两个同事进程复查仍在。**重要更正**：DPDK `RTE_MAX_LCORE=128`，物理核 ≥128 一律不可用 → 第一组 node2 的 `--lcores (0-3)@(154-157)` 是无效写法，回落 `-l 0-3`，**target 实际一直跑在核 0-3（NUMA0）**；E3-BJ「target reactor 154–157 / NUMA2」应更正为 NUMA0（与盘同域），**削弱“NUMA 错位”作为与同事 B 差异的解释**。RAID0 跨 NUMA：NUMA0 只剩 2 块空闲盘，5 盘只能 2+3。坑：driver_override 后必须先 unbind nvme 再 bind vfio；mooncake_client 必须 root（非 root 报 EAL IOVA PA）。只做 1/1 4MB 100-key 10s 冒烟，未跑全量/8MB/多并发。产物 `第二组测试环境/E3-BD_setup_20261109/continue_20261110/` 19 文件/8.6MB；台账 §93。 |
 | E3-BE | 2026-11-09 | **第七次测试第一步**：d 1/1 实测 transfer/copy 拆开；问题文档 `第七次测试/第七次测试_起点问题_20261109.md` | 已完成（回执已收） | **直接打点成功，非估算**：transfer mean **208.8/211.0/213.5**（P50 212/219/220；submit 3.2/3.2/4.1、wait 202.1/204.2/204.7）；copy=scatter **339.3/338.7/340.0**（P50 339/338/340；scatter_copy 335.9/335.6/336.1）；read/query/total 551.9–557.7/108.1–138.5/661.1–697.5。恒等式闭合（alloc+prep+get+scatter+free−sp_total=−1；read−get−scatter=+3.7~4.2，p99 5.0）。**剩余 gap 42.4–47.1 µs 全在 transfer wait**（208.8–213.5 vs 预期166.4）；submit/包装3–4、alloc/prep/free=0。iostat：15044 req→64.19 child op/req（64K strip）、5 盘各12071MiB、盘侧6.03 GiB/s vs client5.87（2.7%）。**归因：wait 是 64×64K 在5盘RAID0上的流水完成时间；要到166.4需约25.2 GB/s（≈23.5 GiB/s，回执单位需核对），超出该阵列在64K strip + 单请求并发的能力 → 阵列带宽边界，不是协议/软件开销。** 历史：第四次296.4→本轮低83–88；第六次估算214.5被实测证实（≤1.5）；copy 与 E3-AJ 336.3 吻合。 |
 | E3-BF | 2026-11-09 | **第七次测试基线**：host vs staging 交叉验证（d 1/1，220k，node2/4） | 已关闭（回执已收） | H host read mean **215.75**（P50 218/P99 239）；S staging read mean **553.76**（P50 553/P99 569）；**差值 copy = 338.01 mean / 335.0 P50**；total 差 337.88/340.0；query 差 −0.21；ops/req 64.02 vs 64.03。与 E3-BE 直接打点 transfer208.8–213.5/copy339、E3-AV 214/556/342 互证；target bdev 5 盘均分、两臂 IO 形态一致，差值归 H2D copy。**host read 215.75 vs E3-BE transfer 208.8–213.5 差 2–7 µs，主结论仍用 E3-BE 直接打点；本臂只作交叉验证。** 单位修正：25.21 GB/s=23.48 GiB/s。产物 R53（32 文件/19.84 MB）。 |
 | E3-BG | 2026-11-10 | **裸 SPDK 基线复测**：当前 target/220k 状态下，`spdk_nvme_perf` 4MB QD1 从 node2 target 读 220k×4MiB 到 node4 DRAM；与 Mooncake transfer 208.8–213.5 对照 | 已完成（回执已收；E3-BH 证明 r2 是模式 B，不是异常） | `-d 220000` 精确 220k IO/859.4GiB（target read_ops 14,080,000=220k×64、880,000MiB，5盘均分）；**E3-BH 证明 r1/r3=模式A、r2=模式B，B 是稳定交替模式，不能剔除**。E3-BG 全3轮：P50 189.44 / mean 218.42 / P90 288.85 / P99 477.01 / 17.89 GiB/s；A(r1/r3) 178.56/215.06，B(r2) 215.04/226.20。**P50 裸快 Mooncake，mean 裸不更快**；不能断言 Mooncake 有27–32协议开销。 |
 | E3-BH | 2026-11-10 | **裸 SPDK 复测**：同 target/220k，4MB QD1、220k IO；5 轮 + 窗口检查 | 已完成（回执已收；**4MB QD1 不是 Mooncake 同形态，不能用于对照**） | **裸 SPDK两态严格交替 B/A/B/A/B/A**（与 E3-BG 两次会话同序列）：**A 快态（r1/r3/r5）P50 178.77 / mean 215.26 / P90 313.17 / 18.14 GiB/s；B 慢态（r2/r4）P50 215.04 / mean 226.20 / P90 236.16 / 17.27**；全5轮 193.28/219.63/282.37/17.79。A/B 两簇不相交（<180µs 占比 A 53–59% vs B 0%；>240µs A 18–19% vs B 9–10%）；load/core idle/top 不随 A/B 交替、target IO 逐位相同 → **不是外部干扰/IO 形态**。**但严格交替可疑，更像每进程 hugepage/URMA 注册/设备资源交替的测试 artifact，不是系统两态；根因未定。且 4MB QD1 与 Mooncake 64K×4qpair 不是同形态，本结果只能作 4MB 单发参考，不能用于 Mooncake 对照。** 需 E3-BI 同形态重测。 |
 | E3-BI | 2026-11-10 | **裸 SPDK 同形态重测**：按 Mooncake transfer 的 64K I/O、4 qpair、在飞约26（QD≈6–7/核）重测；不跑4MB QD1 | 已取消（改用 urma_perf，转 E3-BK） | 用户决定直接用 `urma_perf` 测；本任务不执行。 |
-| E3-BK | 2026-11-10 | **urma_perf 基线（同机同 target）**：5SSD、stripe64K、b1T1；4MB/8MB + Mooncake 64K×4qpair 形态 | **暂缓（node2/node4 被占用；先执行 E3-BD）** | node4 initiator → node2 target 4457；编译/使用 e12b7cb `examples/nvme/urma_perf`；`-M cpu` + `URMA_PERF_REGION_REG=1`、`-T1 -b1`、`-w read`、`-t30`、`-n1 -g0 -l0`，`-o4M` 和 `-o8M` 各3轮；另跑 Mooncake 形态 `-o64K -T4 -b6/-b7` 各2–3轮；记录 P50/mean/P90/P99/GiB/s、target ops/req（4M=64、8M=128、64K=1）、5盘分布、in-flight；对照 Mooncake transfer 208.8–213.5、spdk_nvme_perf 4MB QD1、同事 b1T1；不改 target/strip/源码，不跑全量/node1/3。 |
-| E3-BJ | 2026-11-10 | **工具口径对齐（只收集/比较，不跑 benchmark）**：同事 B 的 `build/examples/urma_perf` vs 我们的 `build/bin/spdk_nvme_perf` | 已关闭（回执已收） | **同一层、不同程序**：urma_perf 就是我们 SPDK 树的 `examples/nvme/urma_perf`，NVMe-oF URMA initiator（`spdk_nvme_ns_cmd_read_ext`，必须带 subnqn），不是 raw URMA；`b1T1`=1 qpair×1在飞 = 我们 `-q1 -c0x1`；计时边界一致（不含连接/注册），不能解释 20+ µs。`-T`=worker/qpair数，`-b`=每worker在飞，`-M`=mem-type（cpu/posix/peermem/dmabuf），`REGION_REG=1`=整块注册跳过 per-I/O；**`-I/-C` 未知（四版 optstring 都没有，需他 commit 帮助）**。真正不能直接比：IO 8MB vs4MB、内存路径 cpu+整池 vs hugepage+shim、链路 node3→node1 6盘 vs node4→node2 5盘、SPDK 9b5cd59(drain-fix) vs e12b7cb、**NUMA 他全0 vs 我们 target reactor154–157(NUMA2)/盘0、client CPU0(NUMA0)/UB卡NUMA2**。更正 R55 peerB_param_compare 中“工具不同/四项不可设”的错误。产物 `第七次测试/工具口径对齐_20261110.md`。 |
+| E3-BK | 2026-11-10 | **urma_perf 基线（同机同 target）**：5SSD、stripe64K、b1T1；4MB/8MB + Mooncake 64K×4qpair 形态 | 暂缓（数据已产出未分析；node2/4 不再跑） | node4 initiator → node2 target 4457；编译/使用 e12b7cb `examples/nvme/urma_perf`；`-M cpu` + `URMA_PERF_REGION_REG=1`、`-T1 -b1`、`-w read`、`-t30`、`-n1 -g0 -l0`，`-o4M` 和 `-o8M` 各3轮；另跑 Mooncake 形态 `-o64K -T4 -b6/-b7` 各2–3轮；记录 P50/mean/P90/P99/GiB/s、target ops/req（4M=64、8M=128、64K=1）、5盘分布、in-flight；对照 Mooncake transfer 208.8–213.5、spdk_nvme_perf 4MB QD1、同事 b1T1；不改 target/strip/源码，不跑全量/node1/3。**2026-11-10 状态：node2/4 被占用暂缓；但 node4 上 `e3bk_matrix` 已自行跑完（15:55:14，含 dmabuf 臂 rc=1），无残留进程；数据在 node4 `~/nds/results/R57_…`（38 文件/264 KB），未分析未打包。** |
+| E3-BJ | 2026-11-10 | **工具口径对齐（只收集/比较，不跑 benchmark）**：同事 B 的 `build/examples/urma_perf` vs 我们的 `build/bin/spdk_nvme_perf` | 已关闭（回执已收） | **同一层、不同程序**：urma_perf 就是我们 SPDK 树的 `examples/nvme/urma_perf`，NVMe-oF URMA initiator（`spdk_nvme_ns_cmd_read_ext`，必须带 subnqn），不是 raw URMA；`b1T1`=1 qpair×1在飞 = 我们 `-q1 -c0x1`；计时边界一致（不含连接/注册），不能解释 20+ µs。`-T`=worker/qpair数，`-b`=每worker在飞，`-M`=mem-type（cpu/posix/peermem/dmabuf），`REGION_REG=1`=整块注册跳过 per-I/O；**`-I/-C` 未知（四版 optstring 都没有，需他 commit 帮助）**。真正不能直接比：IO 8MB vs4MB、内存路径 cpu+整池 vs hugepage+shim、链路 node3→node1 6盘 vs node4→node2 5盘、SPDK 9b5cd59(drain-fix) vs e12b7cb、**NUMA 他全0 vs 我们 target reactor154–157(NUMA2)/盘0、client CPU0(NUMA0)/UB卡NUMA2**。更正 R55 peerB_param_compare 中“工具不同/四项不可设”的错误。产物 `第七次测试/工具口径对齐_20261110.md`。**2026-11-10 再更正（E3-BD）：DPDK `RTE_MAX_LCORE=128`，`--lcores (0-3)@(154-157)` 无效、回落 `-l 0-3`，target 实际在核 0-3/NUMA0（与盘同域），原“reactor 154–157/NUMA2、跨 NUMA”作废；NUMA 错位不再解释与同事 B 的差异。** |
 
 ---
 
@@ -3677,7 +3677,7 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 
 ---
 
-# E3-BD（当前执行 · 2026-11-10）· 第二组环境搭建：node1 4090D + node3 target/master
+# E3-BD（已完成 · 2026-11-10）· 第二组环境搭建：node1 4090D + node3 target/master
 
 > **2026-11-10 用户指令：node2/node4 有人在用，完全不碰；现在只做 node1/node3。绝不能 kill 同事的 master 或任何他人进程；node3 上发现他人 master/数据/占用，先停并回报，不清盘。**
 > 用户确认 node1/node3 现在可用；要求把第二组环境**搭到完全 ready**：能跑通 a/b/c/d 1/1 4MB 冒烟（failed=0）。
@@ -3732,6 +3732,30 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 - 本地：`D:\gds性能\第二组测试环境\`。
 - 必须给：拓扑表、磁盘选择、SPDK/master 命令、端口/PID、源码 commit/bin md5、peermem 状态、memory segment、URMA 设备、4 个冒烟结果、未解决缺口。
 - 不改第一组；不改交付表；不跑全量；无源码 diff。
+
+## 回执（2026-11-10，已收）
+
+**结论：第二组已搭到「b 通 + NoF 数据面通」；a/c/d 因 node1 udma 是 stub 而 blocked。**
+
+| 场景 | 结果 | 证据 |
+| --- | --- | --- |
+| b（内存源 + staging） | ✅ | rc=0、`effective_path=ub/staging`、`status[read_ok]`；Avg 378.71 / P50 376.83 / P90 385.02 / P99 466.94 µs（与第一组 b 冒烟 378.45/372.74 同量级） |
+| a（内存源 + GDR） | ❌ blocked | `register_buffer failed ret=-600`（URMA Unknown error 2048） |
+| c（NoF + GDR） | ❌ blocked | 同上 |
+| d（NoF + staging） | ❌ blocked | `cuMemGetHandleForAddressRange rc=801` → peermem 回落 → NoF whole-pool registration failed rc=-2048 |
+| 旁证 NoF + host | ✅ | rc=0、`effective_path=nof/host`；Avg 436.69 / P50 327.68 → target/NoF/master/URMA 数据面完好 |
+
+- **根因**：node1 `udma`=262144（stub，无 P2P），GPU 版应为 270336；本机唯一 GPU 版 `udma.ko` 的 vermagic 是 `6.6.0-netlab_pcie_ub_compat+`，与本机内核 `6.6.0-159.4.2.153…oe2403sp4` 不匹配。`rmmod udma` 会打断同事 target/client（ubcore 被 5 个模块共用），按规则未动。
+- **拓扑/实证**：node3 target 655860（`rt_spdk/nvmf_tgt` md5 `e7440ae0…`，`-m 0xf00` 核 8-11、`-s 4096`、socket `/var/tmp/spdk_n3.sock`），4457 在听；Raid0 num_blocks=75014659200、strip_size_kb=64、block_size=512、nsid 1、5/5 online，**与第一组 node2 逐位相同**。master 655980（50056/9006/metadata 8086）；client 656162（root、32GiB、`:50156`、segment `141.61.84.149:12574`）；`nof_register 38407493406160` succeeded、`master_nof_allocated_bytes=419430400`；a/b 100 keys + c/d 100 keys 预填两次 failed=0、`master_key_count=200`。
+- **磁盘选择（避开同事）**：同事 `nvmf_tgt`(535512, :4420, `/home/yin/nof/spdk`) 占 21,22,28,a1,a2；本轮取 29,2a（NUMA0）+ 91,92,a3（NUMA2）；取用前逐盘确认 mount/holders/fuser 全空；a4 绑后已还原回 nvme。
+- **环境变更（已记回退）**：node3 hugepages 4640→7168（+5 GB）；29,2a,91,92,a3 绑 vfio；我方 3 个进程 + 5 个端口。回退见产物 md §五。
+- **未动他人**：node3 同事 master(483112)/target(535512) 及 4420·50736·9205·8637·24789 原样；node1 同事 master(115065, 50058/9008)/target(111900) 原样；第一组 node2/node4 完全没碰；两个同事进程现仍在运行（已复查）。
+- **重要更正（影响历史解释）**：DPDK `RTE_MAX_LCORE=128`，物理核 ≥128 一律不可用 → 第一组 node2 的 `--lcores (0-3)@(154-157)` 是**无效写法**，DPDK 回落 `-l 0-3` → **target 实际一直跑在核 0-3（NUMA0）**。E3-BJ 里「target reactor 在 NUMA2、与盘跨 NUMA」应更正为 **NUMA0（与盘同域）**，这削弱了「NUMA 错位」作为我们与同事 B 差异的解释。
+- **RAID0 跨 NUMA**：NUMA0 只剩 2 块空闲盘，5 盘只能 2+3。
+- **另两个坑**：`driver_override` 后必须先 unbind nvme 才能 bind vfio；`mooncake_client` 必须 root 起（非 root 报 `EAL: Cannot use IOVA as 'PA'`）。
+- **E3-BK 已按指令停手**：node4 上的 `e3bk_matrix` 实际已于 15:55:14 自己跑完（含 dmabuf 臂 rc=1），无残留进程；数据留在 node4 `~/nds/results/R57_…`（38 文件 / 264 KB），未分析未打包。
+- 未做：a/c/d 未通（需 node1 匹配内核的 GPU 版 `udma.ko` 270336，本轮不动共享模块）；只做 1/1 4MB 100 keys 10s 冒烟，未跑全量/8MB/多并发。
+- 产物：`测试相关资料/第二组测试环境/E3-BD_setup_20261109/continue_20261110/`（19 文件 / 8.6 MB）；台账 §93；无源码 diff。
 
 ---
 
@@ -4007,7 +4031,7 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 
 - `spdk_nvme_perf` 的 commit/版本、`--help-full`（已知无 `-M/-I/-C/URMA_PERF_REGION_REG`）；
 - e12b7cb 源码/构建里是否有 `examples/urma_perf`；有就只跑 `--help`/读源码，不跑负载；
-- 我们的 target 配置：`--lcores (0-3)@(154-157)`（NUMA2）、5 盘 NUMA0、`-q128`、strip64K、4457；
+- 我们的 target 配置：`--lcores (0-3)@(154-157)`（NUMA2）、5 盘 NUMA0、`-q128`、strip64K、4457；**（2026-11-10 E3-BD 更正：该写法无效——DPDK `RTE_MAX_LCORE=128`，核 ≥128 不可用，实际回落 `-l 0-3`，target 一直跑在核 0-3/NUMA0）**；
 - initiator：`-c0x1`→CPU0/NUMA0，UB 卡 0000:a6:00.0→numa=2；确认跨 NUMA。
 
 ## 三、必须输出的对照表
@@ -4038,7 +4062,8 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 - 同事 B 的 `urma_perf` 就是我们 SPDK 树的 **`examples/nvme/urma_perf`**（Huawei 2026，含 Yin/Yida 修改）；它用 `spdk_nvme_ns_cmd_read_ext/write_ext` 向 target namespace 发标准 NVMe Read/Write，**必须带 subnqn**，是 NVMe-oF URMA initiator，不是 raw URMA 内存拷贝。
 - **`b1T1` = 1 qpair × 1 在飞 = 我们 `-q1 -c0x1`**；延迟=`completion_tick − submit_tsc`，从所有 qpair 就绪+整池注册+verify 之后开始，**不含连接/注册，与 spdk_nvme_perf 同边界，不能解释 20+ µs**。
 - 参数：`-T` worker/qpair 数；`-b` 每 worker 在飞；`-M` mem-type（cpu/posix/peermem/dmabuf）；`URMA_PERF_REGION_REG=1` 整块注册、跳过 per-I/O；仅 cpu/posix/peermem 生效。**`-I/-C` 四版 optstring 都没有，未知；需同事 commit 9b5cd59 的 help。**
-- 真正不能直接比：**IO 8MB vs 4MB；内存 cpu+整池 vs hugepage+shim；链路 node3→node1 6盘 vs node4→node2 5盘；SPDK 9b5cd59(drain-fix) vs e12b7cb；NUMA 他全 NUMA0 vs 我们 target reactor 154–157(NUMA2)/盘 NUMA0、client CPU0(NUMA0)/UB 卡 NUMA2。**
+- 真正不能直接比：**IO 8MB vs 4MB；内存 cpu+整池 vs hugepage+shim；链路 node3→node1 6盘 vs node4→node2 5盘；SPDK 9b5cd59(drain-fix) vs e12b7cb；NUMA 他全 NUMA0 vs 我们 target reactor NUMA0（2026-11-10 更正，见下）/盘 NUMA0、client CPU0(NUMA0)/UB 卡 NUMA2。**
+- **2026-11-10 更正（E3-BD 实测）**：DPDK `RTE_MAX_LCORE=128`，物理核 ≥128 一律不可用 → 第一组 node2 的 `--lcores (0-3)@(154-157)` 是无效写法，回落 `-l 0-3`，**target 实际一直在核 0-3（NUMA0）**，与盘同域。原「target reactor 154–157(NUMA2)、与盘跨 NUMA」作废；**「NUMA 错位」不能解释我们与同事 B 的差异**。client CPU0(NUMA0) 与 UB 卡 NUMA2 的跨域仍在，未验证。
 - 更正：R55 `peerB_param_compare.md` §二 D 初版“工具不同、-M/-I/-C/REGION_REG 四项不可设”错误；实际 `-M/-b/-T/REGION_REG` 对齐，只有 `-I/-C` 未知。
 - E3-BI（64K×4qpair 同形态）仍待执行；下一步建议：同机同 target 双工具交替（urma_perf `-M cpu`+REGION_REG vs spdk_nvme_perf），再做 NUMA 对齐 A/B。
 - 产物：`第七次测试/工具口径对齐_20261110.md`（243行/18KB）、更正后的 `peerB_param_compare.md`；台账 §92；索引 R56；无环境变更。
@@ -4047,6 +4072,7 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 
 # E3-BK（暂缓 · 2026-11-10）· urma_perf 同机同 target 基线
 
+> **2026-11-10 15:55 更新：node4 上 `e3bk_matrix` 已自行跑完（含 dmabuf 臂 rc=1），无残留进程；数据在 node4 `~/nds/results/R57_…`（38 文件 / 264 KB），未分析未打包。因 node2/node4 仍被占用，暂不再追加运行；是否分析现有数据待用户决定。**
 > **暂缓原因：node2/node4 当前有人使用（load 12–18、node4 reactor_117/cc1plus 高频），用户要求先做第二组 node1/node3 部署（E3-BD）。等第一组空闲或用户改派到第二组后再执行；本任务书保留不变。**
 > E3-BJ 已确认：`examples/nvme/urma_perf` 与 `spdk_nvme_perf` **同层**（NVMe-oF URMA initiator，必须带 subnqn），`b1T1`=1 qpair×1在飞；区别在工具/内存注册/IO大小/链路/commit/NUMA。
 > 用户决定：**直接用 `urma_perf` 测**；E3-BI（spdk_nvme_perf 64K）取消。
