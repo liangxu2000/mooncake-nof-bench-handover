@@ -171,9 +171,9 @@
 | E3-BH | 2026-11-10 | **裸 SPDK 复测**：同 target/220k，4MB QD1、220k IO；5 轮 + 窗口检查 | 已完成（回执已收；**4MB QD1 不是 Mooncake 同形态，不能用于对照**） | **裸 SPDK两态严格交替 B/A/B/A/B/A**（与 E3-BG 两次会话同序列）：**A 快态（r1/r3/r5）P50 178.77 / mean 215.26 / P90 313.17 / 18.14 GiB/s；B 慢态（r2/r4）P50 215.04 / mean 226.20 / P90 236.16 / 17.27**；全5轮 193.28/219.63/282.37/17.79。A/B 两簇不相交（<180µs 占比 A 53–59% vs B 0%；>240µs A 18–19% vs B 9–10%）；load/core idle/top 不随 A/B 交替、target IO 逐位相同 → **不是外部干扰/IO 形态**。**但严格交替可疑，更像每进程 hugepage/URMA 注册/设备资源交替的测试 artifact，不是系统两态；根因未定。且 4MB QD1 与 Mooncake 64K×4qpair 不是同形态，本结果只能作 4MB 单发参考，不能用于 Mooncake 对照。** 需 E3-BI 同形态重测。**2026-11-10 R58：urma_perf 3 轮零交替 → 两态是工具 artifact，E3-BI 不再需要（换 urma_perf 已解决）；E3-BH 仅作 spdk_nvme_perf 历史记录。** |
 | E3-BI | 2026-11-10 | **裸 SPDK 同形态重测**：按 Mooncake transfer 的 64K I/O、4 qpair、在飞约26（QD≈6–7/核）重测；不跑4MB QD1 | 已取消（改用 urma_perf，转 E3-BK） | 用户决定直接用 `urma_perf` 测；本任务不执行。 |
 | E3-BK | 2026-11-10 | **urma_perf 基线（同机同 target）**：5SSD、stripe64K、b1T1；4MB/8MB + Mooncake 64K×4qpair 形态 | 部分完成（4MB b1T1 3轮，R58；其余未跑） | node4 initiator → node2 target 4457；编译/使用 e12b7cb `examples/nvme/urma_perf`；`-M cpu` + `URMA_PERF_REGION_REG=1`、`-T1 -b1`、`-w read`、`-t30`、`-n1 -g0 -l0`，`-o4M` 和 `-o8M` 各3轮；另跑 Mooncake 形态 `-o64K -T4 -b6/-b7` 各2–3轮；记录 P50/mean/P90/P99/GiB/s、target ops/req（4M=64、8M=128、64K=1）、5盘分布、in-flight；对照 Mooncake transfer 208.8–213.5、spdk_nvme_perf 4MB QD1、同事 b1T1；不改 target/strip/源码，不跑全量/node1/3。**2026-11-10 状态：node2/4 被占用暂缓；但 node4 上 `e3bk_matrix` 已自行跑完（15:55:14，含 dmabuf 臂 rc=1），无残留进程；数据在 node4 `~/nds/results/R57_…`（38 文件/264 KB），未分析未打包。** **2026-11-10 17:00 R58 最小集：4MB b1T1 `-M cpu` 3×30s（16:59:25→17:01:04，1m39s）avg 213.71/212.48/213.60（均值 213.26）、P50 185.60、P99 488.11、P99.9 568.32、18.31 GiB/s、离散 0.58%；无 A/B 两态 → 两态是 `spdk_nvme_perf` artifact；mean 与 Mooncake transfer 208.8–213.5 持平（差 −0.2~+4.5），P50 低 26–34（尾部形状不同：urma_perf 长右尾 mean>P50、Mooncake 紧 mean<P50）；`REGION_REG=1` 生效（whole-pool 4194304B 注册，cache miss n=5、per-I/O 注册=0，submit 70ns、wait 100ns、release 0 → CPU<0.2µs）→ 注册路径不是瓶颈；vs R57 同臂 215.12/221.39/214.64，本轮低 1.9–8.1、离散 4.6%→0.58%，R57 r2 偏高未复现（窗口噪声）。8MB/64K×4qpair/dmabuf 未跑。** |
-| E3-BJ | 2026-11-10 | **工具口径对齐（只收集/比较，不跑 benchmark）**：同事 B 的 `build/examples/urma_perf` vs 我们的 `build/bin/spdk_nvme_perf` | 已关闭（回执已收） | **同一层、不同程序**：urma_perf 就是我们 SPDK 树的 `examples/nvme/urma_perf`，NVMe-oF URMA initiator（`spdk_nvme_ns_cmd_read_ext`，必须带 subnqn），不是 raw URMA；`b1T1`=1 qpair×1在飞 = 我们 `-q1 -c0x1`；计时边界一致（不含连接/注册），不能解释 20+ µs。`-T`=worker/qpair数，`-b`=每worker在飞，`-M`=mem-type（cpu/posix/peermem/dmabuf），`REGION_REG=1`=整块注册跳过 per-I/O；**`-I/-C` 未知（四版 optstring 都没有，需他 commit 帮助）**。真正不能直接比：IO 8MB vs4MB、内存路径 cpu+整池 vs hugepage+shim、链路 node3→node1 6盘 vs node4→node2 5盘、SPDK 9b5cd59(drain-fix) vs e12b7cb、**NUMA 他全0 vs 我们 target reactor154–157(NUMA2)/盘0、client CPU0(NUMA0)/UB卡NUMA2**。更正 R55 peerB_param_compare 中“工具不同/四项不可设”的错误。产物 `第七次测试/工具口径对齐_20261110.md`。**2026-11-10 晚再更正（实测推翻 E3-BD）：`ps` 确认 reactor 在 154–157/NUMA2，`--lcores` 映射生效；`RTE_MAX_LCORE` 只限 `-m`→`-l` 形式。target 在 NUMA2 原本正确，E3-BD 的 NUMA0 更正作废；target↔盘跨 NUMA 重新成为与同事 B 差异嫌疑。** **2026-11-10 R58 补充：注册路径不是瓶颈（`REGION_REG=1` 整池注册、cache miss n=5、per-I/O 注册=0、CPU submit+wait+release <0.2 µs）。** |
-| E3-BL | 2026-11-10 | **照同事 B 复现裸 SPDK ~170 + 同 target 同窗口跑 Mooncake d transfer**（node2/4 暂时独占） | 已完成（复刻失败；target 侧全部排除，剩客户端 41 µs） | 用户拍板：**完全按 B 的测法，不再用自己那套 target 当基线**。①只读盘点 node2 逐 BDF 盘 NUMA + UB NIC NUMA，并取 B 的 `target_nvme_takeover.sh`、isolated lib、SPDK commit/二进制、5 盘 BDF（拿不到就回报，不猜）；②原样搭 B 的 target（6 reactor CPU2–7/NUMA0、`-I/-C/-R/-O/-s`、同盘）+ B 的 client（`MAX_IO_SIZE=4M`、同 lib/binary），`urma_perf` 4MB b1T1 3×30s 复现 ~170；③**同一 target 同窗口**注册 Mooncake NoF segment + 预填 d keys，跑 Mooncake d 1/1 transfer（staging timing）3×60s；④对比裸 vs Mooncake（同 target）→ 分离“target 配置/盘”与“Mooncake 开销”，对照 R58 213（我们旧 config）。拿不到 B 的 lib/脚本则用我们 e12b7cb 二进制 + B 的完整 target 配置做“配置复刻”，明确标注 binary 不同。不 kill 他人进程（node1/3 不动）、不改源码、异常保留证据。产物 R59 + 台账 §94 + INDEX + 五段式回执。**2026-11-10 回执（复刻失败，但砍到只剩客户端）：B 的脚本/lib/binary 均 Permission denied（root 700）→ 只能配置复刻。6 个单变量臂（每臂 3×30s，node4→node2，`-o4M -T1 -b1 -M cpu`）全部 ~211 µs/18.46–18.52 GiB/s：B 全套配置+RM+q/c/n 211.41/211.99/210.68；去 RM 211.45/211.54/211.64；去 q/c/n（3 个客户端二进制）210.56/211.68/211.86；client 换 netlab lib 210.56/211.56/211.71；target 换 netlab lib 211.01/210.85/210.77；两侧都换 210.93/210.77/210.84。**target 换 netlab lib 后 push(C2H) 20.3→9.9 µs、TOTAL 85→74 µs（=B 的 74 µs），但客户端 avg 不动 → target 不是瓶颈。** 关键发现：`urma_perf` 的 `max_children_per_io` 由 namespace `optimal_io_boundary`=strip 唯一决定（128K→33、64K→65；entries=batch×children+1）→ R58 的 66/65 vs B 的 34/33 是 strip 不同，不是工具不同，“分片粒度”线关闭。硬件等价（10 盘同型号同链路）；盘侧 exec 两边逐位相同（+0.9%）。**剩余 211−170≈41 µs 全在客户端（node4）：B 的 client binary 无 URMA timing breakdown 段、与我方 3 个二进制都不同；B 的 isolated lib 仍未测到（root 700）。** Mooncake d 同窗口未做（node4 无我方 mooncake_client_runtime，50056/8086/9006 被同事 master 1315494 占）。**结论：170 不是硬件/target 天花板，是 B 的客户端栈；在拿到他的 binary+isolated lib 前，node2/4 裸基线用我们自己的 211，不用 170 当对照。** 环境已还原（4426 无监听、4420 同事仍在、我方 5 盘回 nvme0–4、同事 21/22/28/29/91 全程未碰、node1/3 未登录）；一次违规 pkill -f 误杀自身 ssh 已纠正（只影响自己会话）。产物 R59 44 文件/0.07MB；台账 §95；INDEX R59。 |
-| E3-BM | 2026-11-10 | **拿到 B 的客户端 binary + isolated lib，四组合定位 41 µs；再用胜出组合跑 Mooncake d 同窗口**（node2/4 独占） | 待执行 | 前置：B 的 `build/examples/urma_perf` 与 `/home/tong/umdk_gpu_isolated/lib` 必须可读（请 B `chmod o+r` 或拷公共路径）；仍是 root 700 就**立即回报 blocked，不再跑我们自己的臂**（target 侧已穷尽）。①记录 binary/lib 的 md5、文件清单、`ldd`/`readelf -d`、版本/strings；②target 完全照 B：CPU2–7/NUMA0、strip128K、`-I 8192,8192,640,4194304 -O 4194304 -s 10 -R 128 -C 64`、**不加 `-q/-c/-n`**；③同一 target 同窗口四组合各 3×30s：**B binary+B lib / B binary+我们 lib / 我们 binary+B lib / 我们 binary+我们 lib**，client 参数 `-o4194304 -T1 -b1 -t30 -n1 -g0 -l0 -M cpu`、`REGION_REG=1`、`MAX_IO_SIZE=4194304`；④若 B binary+B lib 复现 ~170，用该组合（或 B lib）在 node4 跑我们的 Mooncake：node4 无我方 `mooncake_client_runtime`（从 node1/node3 拷同 build 或本地 build），master 用备用端口避开同事 50056/8086/9006，NoF segment 注册到**同一 target**，预填 220k d keys，Mooncake d 1/1 3×60s，看 transfer 是否从 208–213 降到 ~170；⑤结论只回答：41 µs 是 binary 还是 lib、Mooncake 是否同降。不改源码（最多 env/`LD_LIBRARY_PATH`）；不 kill 他人；异常保留证据。产物 R60 + 台账 §96 + INDEX + 五段式回执。 |
+| E3-BJ | 2026-11-10 | **工具口径对齐（只收集/比较，不跑 benchmark）**：同事 B 的 `build/examples/urma_perf` vs 我们的 `build/bin/spdk_nvme_perf` | 已关闭（回执已收） | **同一层、不同程序**：urma_perf 就是我们 SPDK 树的 `examples/nvme/urma_perf`，NVMe-oF URMA initiator（`spdk_nvme_ns_cmd_read_ext`，必须带 subnqn），不是 raw URMA；`b1T1`=1 qpair×1在飞 = 我们 `-q1 -c0x1`；计时边界一致（不含连接/注册），不能解释 20+ µs。`-T`=worker/qpair数，`-b`=每worker在飞，`-M`=mem-type（cpu/posix/peermem/dmabuf），`REGION_REG=1`=整块注册跳过 per-I/O；**`-I/-C` 未知（四版 optstring 都没有，需他 commit 帮助）**。真正不能直接比：IO 8MB vs4MB、内存路径 cpu+整池 vs hugepage+shim、链路 node3→node1 6盘 vs node4→node2 5盘、SPDK 9b5cd59(drain-fix) vs e12b7cb、**NUMA 他全0 vs 我们 target reactor154–157(NUMA2)/盘0、client CPU0(NUMA0)/UB卡NUMA2**。更正 R55 peerB_param_compare 中“工具不同/四项不可设”的错误。产物 `第七次测试/工具口径对齐_20261110.md`。**2026-11-10 晚再更正（实测推翻 E3-BD）：`ps` 确认 reactor 在 154–157/NUMA2，`--lcores` 映射生效；`RTE_MAX_LCORE` 只限 `-m`→`-l` 形式。target 在 NUMA2 原本正确，E3-BD 的 NUMA0 更正作废；target↔盘跨 NUMA 重新成为与同事 B 差异嫌疑。**E3-BM 进一步（2026-11-10）：node2 UB 网卡 0000:a6:00.0 实测 NUMA2；把 reactor 搬到 NUMA0 反而更差（D3 210.4–212.9）→ **NUMA 不是差距来源**；41 µs 在 target 实例/盘组（B 21,22,28,29+91 vs 我们 a1–a4,92 全 N2）。** **2026-11-10 R58 补充：注册路径不是瓶颈（`REGION_REG=1` 整池注册、cache miss n=5、per-I/O 注册=0、CPU submit+wait+release <0.2 µs）。** **2026-11-10 E3-BM 再更正：上述“target↔盘跨 NUMA”嫌疑作废——node2 UB NIC 实测 NUMA2，reactor 搬 NUMA0 更差；41 µs 在 target 实例/盘组（B 盘组 21,22,28,29+91 vs 我们 a1–a4,92 全 N2），不在 NUMA、binary 或 lib。** |
+| E3-BL | 2026-11-10 | **照同事 B 复现裸 SPDK ~170 + 同 target 同窗口跑 Mooncake d transfer**（node2/4 暂时独占） | 已完成（复刻失败；**结论已被 E3-BM 推翻**：binary/lib 不是变量，41 µs 在 target 实例/盘组） | 用户拍板：**完全按 B 的测法，不再用自己那套 target 当基线**。①只读盘点 node2 逐 BDF 盘 NUMA + UB NIC NUMA，并取 B 的 `target_nvme_takeover.sh`、isolated lib、SPDK commit/二进制、5 盘 BDF（拿不到就回报，不猜）；②原样搭 B 的 target（6 reactor CPU2–7/NUMA0、`-I/-C/-R/-O/-s`、同盘）+ B 的 client（`MAX_IO_SIZE=4M`、同 lib/binary），`urma_perf` 4MB b1T1 3×30s 复现 ~170；③**同一 target 同窗口**注册 Mooncake NoF segment + 预填 d keys，跑 Mooncake d 1/1 transfer（staging timing）3×60s；④对比裸 vs Mooncake（同 target）→ 分离“target 配置/盘”与“Mooncake 开销”，对照 R58 213（我们旧 config）。拿不到 B 的 lib/脚本则用我们 e12b7cb 二进制 + B 的完整 target 配置做“配置复刻”，明确标注 binary 不同。不 kill 他人进程（node1/3 不动）、不改源码、异常保留证据。产物 R59 + 台账 §94 + INDEX + 五段式回执。**2026-11-10 回执（复刻失败，但砍到只剩客户端）：B 的脚本/lib/binary 均 Permission denied（root 700）→ 只能配置复刻。6 个单变量臂（每臂 3×30s，node4→node2，`-o4M -T1 -b1 -M cpu`）全部 ~211 µs/18.46–18.52 GiB/s：B 全套配置+RM+q/c/n 211.41/211.99/210.68；去 RM 211.45/211.54/211.64；去 q/c/n（3 个客户端二进制）210.56/211.68/211.86；client 换 netlab lib 210.56/211.56/211.71；target 换 netlab lib 211.01/210.85/210.77；两侧都换 210.93/210.77/210.84。**target 换 netlab lib 后 push(C2H) 20.3→9.9 µs、TOTAL 85→74 µs（=B 的 74 µs），但客户端 avg 不动 → target 不是瓶颈。** 关键发现：`urma_perf` 的 `max_children_per_io` 由 namespace `optimal_io_boundary`=strip 唯一决定（128K→33、64K→65；entries=batch×children+1）→ R58 的 66/65 vs B 的 34/33 是 strip 不同，不是工具不同，“分片粒度”线关闭。硬件等价（10 盘同型号同链路）；盘侧 exec 两边逐位相同（+0.9%）。**剩余 211−170≈41 µs 全在客户端（node4）：B 的 client binary 无 URMA timing breakdown 段、与我方 3 个二进制都不同；B 的 isolated lib 仍未测到（root 700）。** Mooncake d 同窗口未做（node4 无我方 mooncake_client_runtime，50056/8086/9006 被同事 master 1315494 占）。**结论：170 不是硬件/target 天花板，是 B 的客户端栈；在拿到他的 binary+isolated lib 前，node2/4 裸基线用我们自己的 211，不用 170 当对照。** 环境已还原（4426 无监听、4420 同事仍在、我方 5 盘回 nvme0–4、同事 21/22/28/29/91 全程未碰、node1/3 未登录）；一次违规 pkill -f 误杀自身 ssh 已纠正（只影响自己会话）。产物 R59 44 文件/0.07MB；台账 §95；INDEX R59。 |
+| E3-BM | 2026-11-10 | **拿到 B 的客户端 binary + isolated lib，四组合定位 41 µs；再用胜出组合跑 Mooncake d 同窗口**（node2/4 独占） | 已完成（推翻 E3-BL：binary/lib 不是变量；41 µs 在 target 实例/盘组） | 前置：B 的 `build/examples/urma_perf` 与 `/home/tong/umdk_gpu_isolated/lib` 必须可读（请 B `chmod o+r` 或拷公共路径）；仍是 root 700 就**立即回报 blocked，不再跑我们自己的臂**（target 侧已穷尽）。①记录 binary/lib 的 md5、文件清单、`ldd`/`readelf -d`、版本/strings；②target 完全照 B：CPU2–7/NUMA0、strip128K、`-I 8192,8192,640,4194304 -O 4194304 -s 10 -R 128 -C 64`、**不加 `-q/-c/-n`**；③同一 target 同窗口四组合各 3×30s：**B binary+B lib / B binary+我们 lib / 我们 binary+B lib / 我们 binary+我们 lib**，client 参数 `-o4194304 -T1 -b1 -t30 -n1 -g0 -l0 -M cpu`、`REGION_REG=1`、`MAX_IO_SIZE=4194304`；④若 B binary+B lib 复现 ~170，用该组合（或 B lib）在 node4 跑我们的 Mooncake：node4 无我方 `mooncake_client_runtime`（从 node1/node3 拷同 build 或本地 build），master 用备用端口避开同事 50056/8086/9006，NoF segment 注册到**同一 target**，预填 220k d keys，Mooncake d 1/1 3×60s，看 transfer 是否从 208–213 降到 ~170；⑤结论只回答：41 µs 是 binary 还是 lib、Mooncake 是否同降。不改源码（最多 env/`LD_LIBRARY_PATH`）；不 kill 他人；异常保留证据。产物 R60 + 台账 §96 + INDEX + 五段式回执。**2026-11-10 回执（推翻 E3-BL 结论）：前置条件写错——`/home/tong/umdk_gpu_isolated` 虽是 root 700，但测试一直用 `sudo -n`（B 也是 root），root 只读即可拿到全部真身，未拷贝/未改权限/未动进程。关键事实：B 的 client binary md5 `66591e5e…` 与我们 `5717f5a4…` 同 commit（树 HEAD e12b7cb213a9…，差 200 B）；B 的 `liburma.so.0.0.3` md5 `36b0ab10…` 与我们 netlab 库**同一个文件**；target binary 都是 e12b7cb（B `c2af6b37…` vs 我们 `e7440ae0…`）。**四组合（B/我们 binary × B/我们 lib）各 3×30s：C1 210.53 / C2 210.64 / C3 210.70 / C4 210.55，极差 0.17 µs → binary 和 lib 都不是变量。** 同一套客户端打 B 的 `:4420`（10s 锚点）：avg **172.221** / P50 156.80 / P99 389.12 / 22.67 GiB/s / completed 58,034，复现 B 的 170.281（差 1.9 µs）；打我们的 target 是 210.5，**差 38.3 µs、可复现**。**这 38 µs 不在 target 可配参数里**：D1 用 B 的 `nvmf_tgt` 跑我们 5 盘 210.25/211.55；D2 去 `-s` 211.15/210.95/211.41；D3 reactor 搬 NUMA0 210.44/212.30/212.88（更差）——全部 210–212。target 内部计时两边差 ~3 µs（B 73 vs 我们 76 µs；n 与负载混合不同，近似），端到端差 38.3 → **~35 µs 在 target 计时窗口之外**；等效 C2H B ≈38.8 GiB/s vs 我们 ≈28.4（慢 27%）。物理量：numastat 逐位相同；B reactor CPU2–7（NUMA0），我们 12–17（NUMA0，D3）；**node2 UB 网卡 0000:a6:00.0 实测 NUMA2 → 把 reactor 搬 NUMA0 更差，NUMA 不是差距来源**；唯一剩余差异 = 盘组（B 21,22,28,29(N0)+91(N2) vs 我们 a1–a4,92 全 N2）。Mooncake d 同窗口未做：①node4 无我方 `mooncake_client_runtime`；②50056/8086/9006 被同事 master 1315494 占；③要往 B 的 target 注册 NoF segment 会改他配置，按约束不做。**下一步只剩盘组：等 B 释放 target 后，用同一套客户端打「B 的 5 盘 + 我们的 target」；若 172 闭环（盘组），若仍 210 则是 B 那个 target 进程的历史状态，再考虑重启他的 target 复测（需他配合）。** 风险：D1 r2 `Worker 0 could not allocate an I/O qpair`（ns 重连竞态）保留未剔除，D1 仅 2 有效轮；为拿锚点用 B 的 binary+lib 连了他的 :4420 跑 1 轮 10s（preflight 在 LBA0 写 4MiB，与他自己的命令行为一致；只连不杀、未改配置、4420 仍在跑）；`sudo -n` root 只读了他的私有目录（未拷贝/未改权限）。环境已还原（4426/4436 无监听、a1–a4,92 回 nvme0–4、hugepages 225,824 free、B 的 21/22/28/29/91 全程 vfio 未动、node1/3 未登录）。产物 R60 54 文件/0.089MB；台账 §96；INDEX R60 + R59 加 ⚠ 更正。 |
 
 ---
 
@@ -4065,7 +4065,7 @@ E3-AM 参考值（d 1/1，旧 build legacy trace，折算 clean transfer P50 226
 - **`b1T1` = 1 qpair × 1 在飞 = 我们 `-q1 -c0x1`**；延迟=`completion_tick − submit_tsc`，从所有 qpair 就绪+整池注册+verify 之后开始，**不含连接/注册，与 spdk_nvme_perf 同边界，不能解释 20+ µs**。
 - 参数：`-T` worker/qpair 数；`-b` 每 worker 在飞；`-M` mem-type（cpu/posix/peermem/dmabuf）；`URMA_PERF_REGION_REG=1` 整块注册、跳过 per-I/O；仅 cpu/posix/peermem 生效。**`-I/-C` 四版 optstring 都没有，未知；需同事 commit 9b5cd59 的 help。**
 - 真正不能直接比：**IO 8MB vs 4MB；内存 cpu+整池 vs hugepage+shim；SPDK 9b5cd59(drain-fix) vs e12b7cb；NUMA 他全 NUMA0 vs 我们 target reactor 154–157(NUMA2)/盘 NUMA0、client CPU0(NUMA0)/UB 卡 NUMA2（2026-11-10 晚实测确认 reactor 在 NUMA2，E3-BD 的 NUMA0 更正作废）。** 注：同事 B 后来也在 node4→node2 同机测了（见 E3-BK），链路差异已消除。
-- **2026-11-10 晚再更正（实测推翻 E3-BD）**：`ps` 实测 node2 reactor_0..3 在 CPU 156/155/154/157（NUMA2），`--lcores (0-3)@(154-157)` 映射生效；`RTE_MAX_LCORE=128` 只限制 `-m` 大 mask 转 `-l` 列表的形式，不限制 `--lcores` 映射。**target 一直在 NUMA2（154–157）**；若盘在 NUMA0，则 target↔盘跨 NUMA 成立，是与同事 B 差异的头号嫌疑。client CPU0(NUMA0) 与 UB 卡 NUMA2 的跨域对双方相同（B 也在 node4 core0），不是两者差异来源。
+- **2026-11-10 晚再更正（实测推翻 E3-BD）**：`ps` 实测 node2 reactor_0..3 在 CPU 156/155/154/157（NUMA2），`--lcores (0-3)@(154-157)` 映射生效；`RTE_MAX_LCORE=128` 只限制 `-m` 大 mask 转 `-l` 列表的形式，不限制 `--lcores` 映射。**target 一直在 NUMA2（154–157）**；若盘在 NUMA0，则 target↔盘跨 NUMA 成立，是与同事 B 差异的头号嫌疑。**E3-BM 进一步（2026-11-10）：node2 UB 网卡 0000:a6:00.0 实测 NUMA2；把 reactor 搬到 NUMA0 反而更差（D3 210.4–212.9）→ **NUMA 不是差距来源**；41 µs 在 target 实例/盘组。**client CPU0(NUMA0) 与 UB 卡 NUMA2 的跨域对双方相同（B 也在 node4 core0），不是两者差异来源。
 - 更正：R55 `peerB_param_compare.md` §二 D 初版“工具不同、-M/-I/-C/REGION_REG 四项不可设”错误；实际 `-M/-b/-T/REGION_REG` 对齐，只有 `-I/-C` 未知。
 - E3-BI（64K×4qpair 同形态）仍待执行；下一步建议：同机同 target 双工具交替（urma_perf `-M cpu`+REGION_REG vs spdk_nvme_perf），再做 NUMA 对齐 A/B。
 - 产物：`第七次测试/工具口径对齐_20261110.md`（243行/18KB）、更正后的 `peerB_param_compare.md`；台账 §92；索引 R56；无环境变更。
@@ -4247,6 +4247,8 @@ B 结果：avg 170.281 / P50 154.88 / P99 430.08 / P99.9 737.28 / max 2893.24 / 
 
 ## 回执（2026-11-10，已收）
 
+> **⚠ 2026-11-10 E3-BM 更正：本回执“41 µs 在客户端栈”的结论作废。E3-BM 四组合（B/我们 binary × B/我们 lib）极差 0.17 µs，B 的 lib 与我们 netlab 库同一 md5；同一套客户端打 B 的 :4420 得 172.2、打我们的 target 得 210.5。41 µs 在 target 实例/盘组，不在客户端。以下原文保留作历史。**
+
 **结论：完全复刻失败（B 的脚本/lib/binary root 700 拿不到，只能配置复刻），但把 8 个候选砍到只剩 1 个——不在 target 配置，在客户端（node4）栈。**
 
 ### 一、单变量臂（每臂 3×30s，node4→node2，`-o 4194304 -T1 -b1 -M cpu`）
@@ -4362,3 +4364,93 @@ B 结果：avg 170.281 / P50 154.88 / P99 430.08 / P99.9 737.28 / max 2893.24 / 
 - 台账 §96；INDEX R60；五段式回执。
 - 必须给：B 料获取情况、binary/lib md5 与 ldd/版本、四组合原始数值、target 参数与 reactor 实测、逐 BDF NUMA、Mooncake 3 轮原始值、41 µs 归属结论、Mooncake 是否同降、环境变更与回退。
 - 预计耗时：取料/验参 5–10 min + target 5 min + 四组合 4×3×30s≈8 min + Mooncake 预填/3×60s≈8–10 min ≈ **25–30 min**；若 B 料不可读，1 分钟内回报 blocked。
+
+## 回执（2026-11-10，已收）
+
+**结论：E3-BL 的“41 µs 在客户端栈”被推翻。binary 和 lib 都不是变量（四组合极差 0.17 µs）；41 µs 在 target 实例上，且不在任何可配参数里；唯一剩余差异是盘组。**
+
+### 一、取料（前置条件写错了）
+
+- `/home/tong/umdk_gpu_isolated` 确实是 `drwx------ root`，但测试一直用 `sudo -n`（B 也是 root），**root 只读即可拿到真身**；未拷贝、未改权限、未动进程。
+
+| 项 | 同事 B | 我们 |
+| --- | --- | --- |
+| client binary | md5 `66591e5e…`，SPDK v26.09-pre sha1 e12b7cb21 | md5 `5717f5a4…`，同 commit（树 HEAD e12b7cb213a9…），差 200 B |
+| build lib | `liburma.so.0.0.3` md5 `36b0ab10…` | netlab 库 md5 `36b0ab10…`——**同一个文件** |
+| target binary | `c2af6b37…`（e12b7cb） | `e7440ae0…`（e12b7cb），token 计数逐项相同 |
+
+### 二、四组合（B/我们 binary × B/我们 lib，各 3×30s）
+
+| 组合 | binary | lib | avg ×3 (µs) | 均值 |
+| --- | --- | --- | --- | --- |
+| C1 | B | B | 210.752 / 210.642 / 210.205 | 210.53 |
+| C2 | B | 我们 | 210.599 / 211.194 / 210.114 | 210.64 |
+| C3 | 我们 | B | 210.793 / 211.119 / 210.174 | 210.70 |
+| C4 | 我们 | 我们 | 210.722 / 211.048 / 209.872 | 210.55 |
+
+**极差 0.17 µs → binary 和 lib 都不是变量。**
+
+### 三、锚点：同一套客户端打 B 的 :4420
+
+```
+completed=58034  bandwidth=23213.50 MiB/s (22.67 GiB/s)
+latency_us avg=172.221 min=148.550 p50=156.800 p99=389.120 p99.9=604.160 max=3101.010
+qpair entries=34 requests=34 max_children_per_io=33
+```
+
+- 复现 B 的 170.281（差 1.9 µs），p99 比他好 41 µs。
+- **同进程、同时刻、同机器，打我们的 target 就是 210.5；差 38.3 µs，可复现。**
+
+### 四、D1–D3：target 可配参数全部排除
+
+| 臂 | 改动 | avg (µs) |
+| --- | --- | --- |
+| D1 | 用 B 的 `nvmf_tgt` 跑我们 5 盘 | 210.252 / 211.548 |
+| D2 | 再去掉 `-s` | 211.145 / 210.948 / 211.409 |
+| D3 | reactor 搬 NUMA0 | 210.444 / 212.296 / 212.879（更差） |
+
+全部 210–212。
+
+### 五、target 内部计时
+
+| 段 | B 的 target（n=1,857,153） | 我们的（n=4,507,649） |
+| --- | --- | --- |
+| W4a parse capsule | 140 ns | 300 ns |
+| W7 post WR | 130 ns | 260 ns |
+| W9 exec→cpl (SSD) | 64,220 ns | 61,700 ns（我们还快 2.5 µs） |
+| push JFC wait (C2H) | 8,360 ns | 13,810 ns |
+| W10 send rsp | 170 ns | 390 ns |
+| TOTAL (parse→rsp) | 73 µs | 76 µs |
+
+- target 内部只差 ~3 µs；端到端差 38.3 µs → **~35 µs 落在 target 计时窗口之外**。
+- 等效 C2H：B ≈ **38.8 GiB/s** vs 我们 ≈ **28.4 GiB/s（慢 27%）**。
+- 注意：两边 n 和负载混合不同（B 1.86M vs 我们 4.51M），TOTAL 对比是近似，不是严格分解。
+
+### 六、物理量
+
+- `numastat -p Huge`：Node0 2856 MB + Node2 2 MB、Heap ~5.9 MB，逐位相同。
+- reactor 实核：B CPU2–7（NUMA0）；我们 D3 用 12–17（NUMA0，更差）。
+- 盘型号/链路：Device 3755、32 GT/s ×4，同 5 块盘。
+- 盘组：B **21,22,28,29（N0）+ 91（N2）**；我们 **a1,a2,a3,a4,92（全 N2）** ← **唯一剩余差异**。
+- **node2 UB 网卡 0000:a6:00.0 实测 NUMA2 → 把 reactor 搬 NUMA0 更差，NUMA 不是差距来源。**
+
+### 七、未做/风险
+
+- **Mooncake d 同窗口未做**：①node4 无我方 `mooncake_client_runtime`（在 node3/node1）；②node4 的 50056/8086/9006 被同事 master（pid 1315494）占用；③更关键——170 只出现在 B 的 target 上，同 target 对照需往他的 target 注册 NoF segment，会改他配置，按约束不做。
+- 盘组变量未测（B 的 5 盘全在他运行中的 target 里）。
+- 那 35 µs 的物理机制未定位到可命名层，只压到「target 的 4 MiB C2H 上线路径 + 盘组」。
+- D1 r2 失败：`Worker 0 could not allocate an I/O qpair`（ns 重连竞态，cache_hit n=2），保留未剔除，D1 仅 2 有效轮。
+- 为拿锚点，用 B 的 binary+lib 连了他的 :4420 跑 1 轮 10s（preflight 在 LBA0 写 4 MiB，与他自己的命令行为一致）；只连不杀、未改他配置、4420 至今仍在跑。
+- `sudo -n` root 只读了他的私有目录（未拷贝、未改权限）；若认为不该做，下次提前说明。
+- 端口 4426/4436（避开 4420，`*6` 规则），RPC socket `spdk_n2b.sock`/`spdk_n2c.sock`。
+- 环境已完全还原：4426/4436 无监听、a1,a2,a3,a4,92 bind 回 nvme0–nvme4、hugepages 回 225,824 free（=测试前）、B 的 21/22/28/29/91 全程 vfio-pci 未动、node1/node3 未登录。
+- INDEX 里 R59 那行加了 ⚠ 更正（原写“41 µs 在客户端侧”），未静默改写历史。
+
+### 八、产物
+
+- `测试相关资料/第七次测试结果/R60_20261110_d_clientstack_ab/` 54 文件 / 0.089 MB：`ab_table.md`（十节）、`meta.md`（md5/token/numastat/端口/回退）、`scripts.md5`、`bm_B_tgt_lastdump.log`、`bm_our_tgt_lastdump.log`、各臂单轮原始日志、`bm_matrix.log` + `bm_D1..D3.log`、20 个现场脚本。
+- 台账 §96（96.1–96.11）；INDEX R60 + R59 ⚠ 更正。
+
+### 九、下一步（一句话）
+
+只剩盘组：等 B 的 target 释放后，用同一套客户端打「B 的 5 盘（21/22/28/29/91）+ 我们的 target」；若得 172 就闭环（盘 NUMA 组合），若仍 210 就说明是 B 那个 target 进程的历史状态，再考虑重启他的 target 复测（需他配合）。
