@@ -180,7 +180,7 @@
 | E3-BQ | 2026-11-11 | **官方场景 d 1/1：N0 组 21,22,28,29,2a + strip128，master=node2、target 4457、标准口径** | 已完成（回执已收；官方 d 1/1） | 用户拍板：不补测，直接按 N0+strip128 跑原来的场景 d。①precheck（node2/4 独占、无他人进程、盘/端口）；②target N0 组 `21,22,28,29,2a`、RAID0 **strip128**、listener **4457**；③master=node2（50056/9006/8086），清旧 NoF 段（4426/4421）并注册新 target 4457；④预填 d 220k（若 N0+128K 的 keys 仍可读可复用，否则重灌，failed=0）；⑤node4 客户端 d 1/1 **3×60s**（220k、4MB、warmup45、start0、sleep0、`MC_BENCH_STAGING_TIMING`+`PATH_TIMING`）；⑥必须给拆解：transfer/submit/wait/copy/read/query/total + 恒等式 + iostat ops/req=64 + 5 盘分布；对照 E3-BE 208.8–213.5 与 E3-BO N0+128K 175.6（1轮）。**注意：master 从 node4 改回 node2 后 query 回到 ~108–138，total 预计 ~620–650，不是 E3-BO 的 560.7；transfer 预期 ~175–180。** 不改源码；不 kill 他人；异常保留。产物 R64 + 台账 §100 + INDEX + 五段式回执。**2026-11-11 回执：官方口径 transfer 178.5 µs（P50 178），比 E3-BE 208.8–213.5 低 31.0（−14.5%）；wait 169.8（−33.7）、submit 4.4（+0.8）、copy 340.0（不变）、read 522.6（−30.1）、query 108.0（远端口径，同级）、total 631.9（−35.5，−5.3%）、6.14 GiB/s（+3~5%）。恒等式闭合。3×60s failed=0，94,804/93,750/94,447 queries。target e7440ae0/pid 3641286/reactor 156,159,160,157,161,158(NUMA2)/strip128/4457；盘 21→20:00.0、22→20:02.0、28→20:10.0、29→20:12.0、2a→20:14.0 全 numa0。iostat：Raid0 32.01 ops/req、盘级 64.02（strip128 自洽；规格里的 64 是 strip64 口径，不是异常）。prefill 复用旧 keys（来自 E3-BE strip64 阵列，未重灌；--verify=false；偏移 880GB≪38.4TB，num_blocks 差 640 块/320KB）；这是唯一口径差异，正式全表建议重灌。transfer 比 E3-BO 175.6 高 2.9µs（未定因：1 轮噪声/旧 key 布局），<3µs 不影响主结论。NoF 段 1 条@4457（E3-AX 已注册），本轮幂等重注册；清 4426/4421 removed=0（在 node4 master，不在 node2）。未 kill 他人；环境还原（nvmf_tgt=0、4457/4426/4421 无监听、5 盘回 nvme、hugepages 227,253 free、dmesg 0 错误、node1/3 未登录）。HANDOVER 状态由此处手动更新（测试侧文件在工作目录外，工具拒绝写入）。** |
 | E3-BR | 2026-11-11 | **午休块：N0+128K 上 c/d 8 格（1/1、1/16、16/1、16/16）**，复用 E3-BQ 的 target/keys | 已合并到 E3-BS（2026-11-11） | 前置：E3-BQ 完成，target N0+128K/4457、master node2、220k keys 仍在；不重建 target、不重灌（除非 key 不在）。①c 1/1 3×60s（GDS；给 query/read/total + GDS 路径，无 copy 段）；②d/c 1/16 各 3×60s；③d/c 16/1 各 3×60s；④d/c 16/16 各 3×60s；全部 clean（sample=0），d 1/1 可另开 staging timing。每格记 avg/P50/P90/P99/P99.9/max、GiB/s、query/read、target iostat ops/req、5 盘分布。⑤若时间：a/b 1/1+16/16 各 3×60s 补齐 16 格（a/b 不受 strip/盘组影响，可复用 R51，非必须）；⑥可选 strip256 d 1/1 2×60s（需重建+prefill，最后做）。不改源码；不 kill 他人；异常保留。产物 R65 + 台账 §101 + INDEX + 五段式回执。 |
 | E3-BS | 2026-11-11 | **N0+128K 全 16 格（a/b/c/d × 1/1、1/16、16/1、16/16）+ 1/1 拆解**（午休 2h 窗口） | 已完成（回执已收；16 格 + xlsx + md） | 用户拍板：统一按 N0+strip128 规格，把 a/b/c/d 全矩阵跑一遍，1/1 打点拆解。前置：node2/4 独占；target N0 组 `21,22,28,29,2a`、strip128、listener 4457；master=node2（50056/9006/8086），清旧 NoF 4426/4421 并注册 4457。①a/b memory 32GiB、3000 keys；c/d NoF 220k keys；预填 failed=0；②按第六次矩阵脚本，a/b/c/d × 4 并发 × **3×60s**（1/1 sleep0，其余 sleep50；4MB、warmup45、start0；clean sample=0）；③**1/1 四格都带拆解**：d staging transfer/submit/wait/copy/read/query/total；b staging（如有 copy）；c GDS query/read/total+GDS 路径；a GDR query/read/total；恒等式；④每格 avg/P50/P90/P99/P99.9/max、GiB/s、iostat ops/req、5 盘分布；⑤对照 R51（旧 N2+64K）与 E3-BE/E3-BO；⑥若时间不足，按 a/b/c/d 1/1 → 1/16 → 16/1 → 16/16 顺序，**先保 1/1**。不改源码；不 kill 他人；异常保留。产物 R66 + 台账 §102 + INDEX + 五段式回执；**结果必须填入 `C:\Users\l00955908\Desktop\mooncake主仓\nds\测试相关资料\第七次测试结果\benchmark_Mooncake_第七次测试.xlsx`（先备份、只改 4MB 目标格、3 轮均值、记录前后 md5），并写 `...\第七次测试结果\第七次测试_结果_20261111.md`（16 格全表 + 1/1 拆解 + 对照 + 异常）。** **2026-11-11 回执：16 格 48 轮 failed=0；d 1/1 = 630.29 µs / 6.16 GiB/s（R51 657.45/5.95，−3.47%），transfer 176.62、wait 168.26、copy 339.81 不变；与 E3-BQ 178.5/631.9 差 1.9/1.6 µs，独立互证。a/b 16/1、16/16 与 R51 逐位相同；c/d 收益只在 1/1（d −3.47%）与 1/16（c −2.20%、d −2.01%），16/1/16/16 ≤0.3%。a/b/c 1/1 略差（a +1.38%、b +4.16%、c +2.46%），b +22.1 µs 未定因（疑 memory 段 90% 占用/key 落点；16/16 逐位相同 ⇒ 非环境漂移）。16/16 四场景 keys/s≈3248、GiB/s≈12.69 → 客户端/UB 上限。prefill：a/b 3000/13s、c/d 220k/464s 全重灌。xlsx Sheet1 K3:U18 已填（16×11，Value2），备份 `bak_20261111_1300`，md5 `55447659…`→`d1ad286a…`，新会话回读 16 行通过；md 已写。**口径 sheet 仍写 R51/40 样本，与 R66/48 不一致，待用户点头更新。** 风险：未 kill 他人；只 PID 停我方 target；环境还原（nvmf_tgt=0、4457 无监听、5 盘回 nvme、hugepages 227,253 free、dmesg 0 错误、node1/3 未登录）。HANDOVER 状态由指挥侧手动更新。** |
-| E3-BT | 2026-11-11 | **清空 memory 段后复测 a/b 1/1**：验证 b +4.16% 是否来自 memory 段占用/key 落点 | 待执行 | 前置：node2/4 独占；只停我方 memory segment（pid 226145，141.61.84.247:13567，32GiB），重启同配置；**不 kill master/他人**。①记录 before：`master_mem_allocated`、segment 占用、`master_key_count`；②清空/重建 memory 段；③prefill a/b **3000 keys**（failed=0），记录占用；④node4 跑 **a 1/1、b 1/1 各 2×60s**（同 E3-BS 口径：4MB、warmup45、start0、sleep0、clean；a GDR、b staging）；⑤对照 E3-BS a 427.66/b 553.94 与 R51 a 421.8/b 531.8；记录 query/read/total、failed、key NUMA（如可得）；⑥**先不改 xlsx/md**，只出诊断；若确认需更新再另派。异常保留；环境还原。产物 R67 + 台账 §103 + INDEX + 五段式回执。 |
+| E3-BT | 2026-11-11 | **清空 memory 段后复测 a/b 1/1**：验证 b +4.16% 是否来自 memory 段占用/key 落点 | 已完成（回执已收；b +22 µs 随 memory 段清空消失） | 前置：node2/4 独占；只停我方 memory segment（pid 226145，141.61.84.247:13567，32GiB），重启同配置；**不 kill master/他人**。①记录 before：`master_mem_allocated`、segment 占用、`master_key_count`；②清空/重建 memory 段；③prefill a/b **3000 keys**（failed=0），记录占用；④node4 跑 **a 1/1、b 1/1 各 2×60s**（同 E3-BS 口径：4MB、warmup45、start0、sleep0、clean；a GDR、b staging）；⑤对照 E3-BS a 427.66/b 553.94 与 R51 a 421.8/b 531.8；记录 query/read/total、failed、key NUMA（如可得）；⑥**先不改 xlsx/md**，只出诊断；若确认需更新再另派。异常保留；环境还原。产物 R67 + 台账 §103 + INDEX + 五段式回执。**2026-11-11 回执：命中第 1 档——b 1/1 +22.1 µs 随 memory 段清空/重建整体消失。清空前 allocated 30,903,631,872 / 34,359,738,368 = 89.94%（7,368 keys），重建后 prefill 3000 keys = 12,582,912,000 / 34,359,738,368 = 36.62%。a 1/1 413.64（R51 421.83，−1.94%；E3-BS 427.66，−3.28%）、b 1/1 529.84（R51 531.80，−0.37%；E3-BS 553.94，−4.35%）；a 也同步变快 → 整段级效应，不是 b 专属；b−a gap 116.20 vs R51 109.97（+6.23）、E3-BS 126.28（−10.08），剩余 6 µs 标未定因。a/b 各 2×60s、4 轮全 failed=0、clean；a r1/r2 差 11.7 µs（2.8%），单轮噪声不小；node4 load 7.6→13.99，绝对值 ±2% 当噪声带。** 未做 timing 拆解；只 a/b 1/1 2 轮；无 NUMA/地址采样。风险：段端点端口动态分配 13567→13482（MEMSEG 作参数传入）；`master_active_clients` 不可靠；他人 master 3496916 14:33 alive/14:47 GONE，本轮未发信号；日志改 `/tmp/bt_client_50156.log`；HANDOVER 需手动更新；`C:\Users\l00955908\Desktop\r67_stage` 596 KB 需用户删。产物 R67 24 文件/596KB；台账 §103；INDEX R67。** |
 
 ---
 
@@ -5098,3 +5098,38 @@ readlink -f /sys/bus/pci/devices/0000:21:00.0 | sed 's#/0000:.*##'     # root po
 - 不改源码、不改交付表；异常保留证据；环境还原（memory segment 回原状态/原 PID 不可回则记录新 PID）。
 - 产物：`测试相关资料/第七次测试结果/R67_20261111_ab1_1_memfresh/`；台账 §103；INDEX R67；五段式回执。
 - 预计：停/起 memory 段 3–5 min + prefill 13 s + a/b 各 2×60s（4 min）+ 记录 2 min ≈ **10–15 min**。
+
+## 回执（2026-11-11，E3-BT，已收）
+
+**结论：命中第 1 档——b 1/1 的 +22.1 µs 随 memory 段清空/重建整体消失，支持“memory 段占用 / key 落点”假设。但 a 也同步变快，是整段级效应，不是 b 专属；b−a gap 只回归一半，剩余 6 µs 未定因。**
+
+| 格 | R51 | E3-BS（R66） | E3-BT（R67） | BT−R51 | BT−BS |
+| --- | --- | --- | --- | --- | --- |
+| a 1/1 avg | 421.83 | 427.66 | **413.64** | −8.19（−1.94%） | −14.02（−3.28%） |
+| b 1/1 avg | 531.80 | 553.94 | **529.84** | −1.96（−0.37%） | −24.10（−4.35%） |
+| b−a gap | 109.97 | 126.28 | 116.20 | +6.23 | −10.08 |
+
+- **before**：client 226145（父 226142 sudo wrapper），etime 5 天 04:31，VmRSS 33,676,764 kB；allocated 30,903,631,872 / capacity 34,359,738,368 = **89.94%**，key_count 275,368，段 [memory=1, NoF=1] @ :13567。
+- **停段**（PID 精确 TERM，未 pkill）：子/父秒级同退，50156 无监听；allocated 0、capacity 0、key_count 268,000（−7,368）。
+- **key 归属**：7,368 × 4 MiB = 30,899,929,088，与 before allocated 差 0.01% → a/b key 全在该段，随段销毁消失，master 无孤儿。
+- **重建**：14:34:45 同配置重启 → 新可执行 pid 3843357，50156 监听，capacity 恢复，`mount_segment_requests_total` 8。
+- **prefill**：3,000 keys、failed=0、14 s、9,994.87 MiB/s；allocated 12,582,912,000（=3000×4MiB 精确值）→ **36.62%**。
+- **读测**：clean（sample=0、poll_sleep=0、60 s、warmup45），a/b 各 2 轮、4 轮全 failed=0：a 419.51/407.77（均值 413.64，9.45 GiB/s）；b 530.76/528.92（均值 529.84，7.37 GiB/s）；allocated 全程 12,582,912,000。
+
+### 未做 / 风险
+
+- clean 口径无 timing → 没有 transfer/submit/wait/copy 拆解，“b 慢在哪一段”未证实。
+- 只 a/b 1/1 各 2 轮；未跑 16/1、16/16、c/d、8 MB；未采样 key 的 NUMA/物理地址。
+- a 的 r1/r2 已差 11.7 µs（2.8%），单轮噪声不小；node4 共用机 loadavg 7.60→13.99（跑测期间），绝对值 ±2% 视作噪声带。
+- 段端点端口每次重启动态分配（13567→13482），规格“同端口”不可复刻；`--port=50156` 才是 RPC 端口；脚本已改为 MEMSEG 作参数（否则报 `Requested segment is not mounted`）。
+- `master_active_clients` 不可靠：停段后仍 1、起新 client 后 2；判在线用 `list_segments` + 端口监听。
+- 他人 master 3496916 14:33 alive、14:47 GONE：本轮未对它发任何信号（全部 kill 仅 `kill -TERM 226145`），推断属主自行停止，已记录。
+- 日志改 `/tmp/bt_client_50156.log`（旧 `/tmp/e3au_client_n2.log` 552 MB），其余参数逐字节一致。
+- 产物：R67 24 文件 / 596 KB；台账 §103；INDEX R67；xlsx/交付 md 未改（按规格）。
+- 中转目录 `C:\Users\l00955908\Desktop\r67_stage`（596 KB）在沙箱允许路径外，测试侧删不掉，需用户手动删。
+
+### 对交付表的影响
+
+- **E3-BS 的 a/b 1/1 是在 memory 段 89.94% 占用下测的**；E3-BT 清空后 b 回到 529.84（R51 531.80，−0.37%）、a 413.64（R51 421.83，−1.94%）。**E3-BS 的 a/b 1/1 两格（427.66/553.94）应视为污染值**，若要交付需要更新。
+- E3-BT 只有 2 轮、a 轮间差 2.8%，建议在 fresh 段上补 **a/b 1/1 各 3×60s** 后再更新 xlsx 的 a/b 1/1 两格；其余 14 格不受影响（1/16/16/1/16/16 与 R51 差 ≤0.7%，且高并发平均掉）。
+- 口径 sheet 仍需从 R51/40 样本更新为 R66/48；若同时改 a/b 1/1，需另派任务并记录前后 md5。
