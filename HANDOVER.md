@@ -183,6 +183,7 @@
 | E3-BT | 2026-11-11 | **清空 memory 段后复测 a/b 1/1**：验证 b +4.16% 是否来自 memory 段占用/key 落点 | 已完成（回执已收；b +22 µs 随 memory 段清空消失） | 前置：node2/4 独占；只停我方 memory segment（pid 226145，141.61.84.247:13567，32GiB），重启同配置；**不 kill master/他人**。①记录 before：`master_mem_allocated`、segment 占用、`master_key_count`；②清空/重建 memory 段；③prefill a/b **3000 keys**（failed=0），记录占用；④node4 跑 **a 1/1、b 1/1 各 2×60s**（同 E3-BS 口径：4MB、warmup45、start0、sleep0、clean；a GDR、b staging）；⑤对照 E3-BS a 427.66/b 553.94 与 R51 a 421.8/b 531.8；记录 query/read/total、failed、key NUMA（如可得）；⑥**先不改 xlsx/md**，只出诊断；若确认需更新再另派。异常保留；环境还原。产物 R67 + 台账 §103 + INDEX + 五段式回执。**2026-11-11 回执：命中第 1 档——b 1/1 +22.1 µs 随 memory 段清空/重建整体消失。清空前 allocated 30,903,631,872 / 34,359,738,368 = 89.94%（7,368 keys），重建后 prefill 3000 keys = 12,582,912,000 / 34,359,738,368 = 36.62%。a 1/1 413.64（R51 421.83，−1.94%；E3-BS 427.66，−3.28%）、b 1/1 529.84（R51 531.80，−0.37%；E3-BS 553.94，−4.35%）；a 也同步变快 → 整段级效应，不是 b 专属；b−a gap 116.20 vs R51 109.97（+6.23）、E3-BS 126.28（−10.08），剩余 6 µs 标未定因。a/b 各 2×60s、4 轮全 failed=0、clean；a r1/r2 差 11.7 µs（2.8%），单轮噪声不小；node4 load 7.6→13.99，绝对值 ±2% 当噪声带。** 未做 timing 拆解；只 a/b 1/1 2 轮；无 NUMA/地址采样。风险：段端点端口动态分配 13567→13482（MEMSEG 作参数传入）；`master_active_clients` 不可靠；他人 master 3496916 14:33 alive/14:47 GONE，本轮未发信号；日志改 `/tmp/bt_client_50156.log`；HANDOVER 需手动更新；`C:\Users\l00955908\Desktop\r67_stage` 596 KB 需用户删。产物 R67 24 文件/596KB；台账 §103；INDEX R67。** |
 | E3-BU | 2026-11-11 | **fresh memory 段确认 a/b 1/1 3×60s，并更新 xlsx a/b 1/1 两格 + 口径 sheet** | 已完成（判据未通过；xlsx 未改；待选 A/B/C） | 前置：E3-BT 的 fresh memory 段（3000 keys/36.62%）仍在；若状态变了，按 E3-BT 方式清空/重建+prefill 3000。①a 1/1、b 1/1 各 **3×60s**（4MB、warmup45、start0、sleep0、clean；a GDR、b staging）；②若 3 轮均值与 E3-BT（a 413.64/b 529.84）在 ±2% 内，更新 `benchmark_Mooncake_第七次测试.xlsx` Sheet1 的 **a 1/1、b 1/1 两格**（按 E3-BS 布局；先备份、记录前后 md5、只改这两格、回读校验）；③同时把 **口径 sheet** 从 R51/40 更新为 **R66/48（每格 3 轮）**，注明 a/b 1/1 为 fresh 段 3×60s、E3-BS 的 a/b 1/1 是 90% 满段污染值已替换；④结果 md 增补 a/b 1/1 新值与 memory 段说明；⑤若 3 轮超出 ±2%，停并回报，不覆盖。不改源码；不 kill 他人；异常保留。产物 R68 + 台账 §104 + INDEX + 五段式回执。**2026-11-11 回执：判据未通过（a 3 轮均值 424.84 vs E3-BT 413.64，+2.71% > ±2%；b 531.60，+0.33% 通过），按规格停手，xlsx 未改（md5 `d1ad286a…` 前后一致，仍 427.66/553.94 污染值；口径 sheet 仍 R51/40）。但方向要解释：a 424.84 相对 R51 421.83 +0.71%、相对 E3-BS 427.66 −0.66%；b 531.60 相对 R51 531.80 −0.04%；b−a gap 106.76（R51 109.97、E3-BS 126.28、E3-BT 116.20）→ 满段导致的 gap 扩张两次消失。±2% 的基准 E3-BT a=413.64 只有 2 轮、r2=407.77 是低尾，更像基准偏低而非本轮偏高。6 轮 clean（a/b 交错 3 轮）failed=0；a 极差 14.66（3.45%，node4 load 13.1–14.2，GDR 敏感）、b 极差 1.70（0.32%）。fresh 段 allocated 36.62%、key 271,000、段 :13482。风险：交付表仍是污染值；node4 更忙；master_active_clients=2；无 query 拆解；dmesg 86 行是 `Shutdown timeout set to 8 seconds`，真错误 0；旁证 evictions 209,357/115/935 keys（3.9GB）但 6 轮 key/allocated 不动。产物 R68 23 文件/101KB；台账 §104；INDEX R68。** 待选：A 采用 424.84/531.60 + 口径 R66/48；B 等 load<8 补测；C 只换 b（不建议）。 |
 | E3-BV | 2026-11-11 | **按 A 更新 xlsx：a/b 1/1 写 424.84/531.60，口径 sheet 改 R66/48** | 已完成（回执已收；xlsx R3/R7 已写，其余 14 行未动） | 用户拍板 A。①备份 xlsx、记录前 md5；②只改 Sheet1 的 a 1/1、b 1/1 两行（按 E3-BS 的 16 行布局；用 R68 meta 候选值：avg/吞吐用均值、分位用中位数、K/L 按原表定义）；其余 14 格不动；③口径 sheet 改为 **R66/48 样本/每格 3 轮**，注明 a/b 1/1 为 E3-BU fresh 段 3×60s（清空前 89.94% 满段造成 b +22 µs 系统偏差，已替换），E3-BS 的 427.66/553.94 为满段污染值；④结果 md 增补 a/b 新值 + memory 段偏差说明；⑤回读两行校验、记录后 md5；布局/候选值不符就停并回报。不重跑测试、不改源码、不 kill。产物 R69 + 台账 §105 + INDEX + 五段式回执。**2026-11-11 回执：按 A 完成。Sheet1 只改 a 1/1(R3)、b 1/1(R7) 共 22 格：a K/L 2353.31、M 407.56、N 424.84、O 425.98、P 438.27、Q 446.46、R 966.65、S 1228.80、T 1768.08、U 9.19；b K/L 1878.96、M 520.85、N 531.60、O 532.48、P 540.67、Q 548.86、R 1097.73、S 1327.10、T 2231.52、U 7.34。其余 14 行逐位未动；备份 `bak_20261111_1518`；md5 `d1ad286a…`→`536db86c…`；回读通过。口径 sheet 改 6 处 + A19/B19：R66/48/每格 3 轮、a/b 1/1 为 E3-BU fresh 段、E3-BS 427.66/553.94 为 89.94% 满段污染值已替换、其余 14 格不变；样本 42+6=48（回执“46”是笔误）。取值：N=3 轮均值（a 424.84/b 531.60），其余列=3 轮中位数；a/b 原始 417.51/432.17/424.83 与 530.51/532.08/532.21，failed=0；a 极差 3.45%、b 0.32%，node4 load 13–14。风险：PS 5.1 UTF-8 无 BOM 坑（首跑失败、xlsx 未改；后改 ASCII+UTF8 读入）；口径 R16 未重算，B19 已注明；HANDOVER 需手动更新。产物 R69 7 文件/15KB；台账 §105；INDEX R69。** |
+| E3-BW | 2026-11-11 | **fresh 段 a/b 1/1 带 timing 3×60s，补 a/b 拆解** | 待执行 | 用户要求：在 fresh memory 段上重跑 a/b 1/1 并开 timing，拿 query/read/total + b 的 transfer/submit/wait/copy。前置：E3-BU fresh 段（3000 keys/36.62%、pid 3843357/50156）仍在；变了就清空/重建+prefill 3000。①a 1/1、b 1/1 各 **3×60s**，开 `MC_BENCH_STAGING_TIMING` + `MC_BENCH_STAGING_PATH_TIMING`（a GDR、b staging）；4MB、warmup45、start0、sleep0；②每轮记 total/query/read；b 加 transfer/submit/wait/copy；恒等式；failed；③对照 E3-BU clean a424.84/b531.60、E3-BS 诊断 a422.13/b549.49；**timing 批与 clean 批可能有 ~5µs 差（d 是 630.29 vs 634.65），必须标注、不要混**；④结果写进结果 md 的 a/b 拆解；**xlsx 暂不动**，除非 timing total 与 xlsx 差 >2% 才回报；⑤不 kill 他人/不改源码。产物 R70 + 台账 §106 + INDEX + 五段式回执。 |
 
 ---
 
@@ -5258,3 +5259,42 @@ readlink -f /sys/bus/pci/devices/0000:21:00.0 | sed 's#/0000:.*##'     # root po
 - 产物：`测试相关资料/第七次测试结果/R69_20261111_xlsx_ab_fix/`；台账 §105；INDEX R69；五段式回执。
 - 必须给：备份名、前后 md5、两行回读值、口径 sheet 改动文本、结果 md 改动摘要。
 - 预计 **5–10 分钟**。
+
+---
+
+# E3-BW（待执行 · 2026-11-11）· fresh 段 a/b 1/1 带 timing 3×60s，补 a/b 拆解
+
+> 用户要求：fresh memory 段上重跑 a/b 1/1 并开 timing，拿 a/b 的 query/read/total 和 b 的 transfer/submit/wait/copy。
+> 目的：解决 §三拆解表（E3-BS 诊断批 a 422.13/b 549.49）与最终 xlsx（E3-BU clean a 424.84/b 531.60）不是同一次 run 的问题。
+
+## 一、前置
+
+- E3-BU fresh 段仍在：pid 3843357、141.61.84.247:50156、段端点 :13482、allocated 12,582,912,000 / 36.62%、key_count 271,000、3000 个 a/b keys。
+- 若状态变了：按 E3-BT 方式清空/重建 + prefill 3000 keys；记录前后 allocated/key。
+- 不碰 master 224956；NoF target 可以 down（a/b 不用盘）；node1/3 不动。
+
+## 二、跑 a/b 1/1 带 timing（各 3×60s）
+
+- a 1/1、b 1/1 各 **3×60s**；4MB、warmup45、start0、sleep0；a GDR/peermem、b staging。
+- 开 `MC_BENCH_STAGING_TIMING` + `MC_BENCH_STAGING_PATH_TIMING`（与 E3-BS 诊断批同口径）。
+- 每轮记录：
+  - a：query、read、total；
+  - b：query、read、total、transfer(get)、submit、wait、copy(scatter)、copy_us；
+  - 恒等式；failed；GiB/s。
+- 同时记 node4 loadavg、memory 段 allocated/key。
+
+## 三、判定 / 写回
+
+- 对照：
+  - E3-BU clean：a 424.84、b 531.60；
+  - E3-BS 诊断批：a 422.13、b 549.49；
+  - 预期 timing 批可能比 clean 低 ~5 µs（d 是 630.29 vs 634.65），**这是批次差，不是错误**。
+- 结果写进 `第七次测试_结果_20261111.md` 的 a/b 拆解（新增或替换 §三的 a/b 行），明确标注“fresh 段 timing 批（E3-BW）”。
+- **xlsx 暂不动**：a/b 1/1 仍用 E3-BU clean 值 424.84/531.60；除非 E3-BW 的 timing total 与 xlsx 差 >2%，才回报并等指示。
+- 不重跑其他格；不跑 16/1、16/16、c/d、8MB。
+
+## 四、产物
+
+- `测试相关资料/第七次测试结果/R70_20261111_ab_timing/`；台账 §106；INDEX R70；五段式回执。
+- 必须给：3 轮原始值 + 均值、a/b 拆解、恒等式、failed、node4 load、memory 段状态、与 E3-BU/E3-BS 的差、是否触发 >2% 回报。
+- 预计 **10–15 分钟**（fresh 段可用则 6 轮×60s=6 min + 记录；需清空/重建 +5 min）。
