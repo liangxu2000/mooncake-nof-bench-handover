@@ -4749,8 +4749,9 @@ readlink -f /sys/bus/pci/devices/0000:21:00.0 | sed 's#/0000:.*##'     # root po
 ## 二、P1：N0 + strip128 Mooncake（确认 175.6）
 
 - 盘组 21,22,28,29,2a；strip 128；同配置 target。
+- **先试复用 E3-BO 写入的 220k keys**：按**相同盘顺序 + 相同 strip128** 重建 RAID0 后，先查 `master_key_count`/抽查 Get；key 仍可读就**跳过 prefill**（省 3–8 min），不可读再重灌。
 - Mooncake d 1/1 **2×60s**（bare 168.7 已有，可加 1×30s 校验，不必 2 轮）。
-- 记录同 P0。
+- 记录同 P0；记录是否复用 key、prefill 实际时长。
 
 ## 三、P2：4×N0+1×N2 + strip128 Mooncake（4/5 N0 是否够）
 
@@ -4775,4 +4776,4 @@ readlink -f /sys/bus/pci/devices/0000:21:00.0 | sed 's#/0000:.*##'     # root po
 - 测试侧：`测试相关资料/第七次测试结果/R63_20261111_d_strip_matrix/`；本地 `D:\gds性能\第七次测试\`。
 - 台账 §99；INDEX R63；五段式回执。
 - 必须给：每臂 2 轮原始值 + 均值、transfer/submit/wait/copy/read/query/total、恒等式、iostat、prefill 时长、盘组/ strip、结论（只有全 N0+128K？还是 4/5 N0 也行？N2+128K 是否也降？）。
-- 预计耗时：P0（重建+prefill+裸 2×30s+Mooncake 2×60s）约 12–18 min；P1 约 8–12 min；P2 约 8–12 min；P3 约 5–8 min。**优先 P0+P1，时间够再做 P2；P3 可选**；总计 25–45 min。
+- 预计耗时：P0（重建+prefill+裸 2×30s+Mooncake 2×60s）约 12–18 min；P1 约 8–12 min（**若 key 可复用则 5–8 min**）；P2 约 8–12 min；P3 约 5–8 min。**优先 P0+P1，时间够再做 P2；P3 可选**；总计 25–45 min（prefill 实际可能 3–8 min/臂，记录真实时长）。
