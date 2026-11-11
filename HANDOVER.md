@@ -4923,6 +4923,8 @@ readlink -f /sys/bus/pci/devices/0000:21:00.0 | sed 's#/0000:.*##'     # root po
 6. a/b/c/d 16/1
 7. a/b/c/d 16/16
 
+> **d 1/1 也要在 fresh prefill 后重跑**：E3-BQ 的 178.5 是复用 E3-BE strip64 旧 keys（`--verify=false`）的确认值，只作对照；全表必须用 fresh 220k keys 的 d 1/1，保证 16 格同一 key 集。E3-BQ 的 3 轮可并列展示，不能替代本表 d 1/1。
+
 - 全部 4MB、warmup45、start0、clean sample=0；1/1 四格开 staging/路径 timing，其余格 clean。
 - 每格记录：avg/P50/P90/P99/P99.9/max、GiB/s、query/read、**iostat（strip128 下 Raid0 ops/req=32、盘级=64，自洽；不要按 strip64 的 64 判异常）**、5 盘分布、failed 数。
 - 1/1 拆解必须给恒等式（alloc+prep+get+scatter+free−sp_total≈0；read−get−scatter≈残差）；c/a 没有 copy 段就写“无”，不要硬套。
