@@ -176,6 +176,7 @@
 | E3-BM | 2026-11-10 | **拿到 B 的客户端 binary + isolated lib，四组合定位 41 µs；再用胜出组合跑 Mooncake d 同窗口**（node2/4 独占） | 已完成（推翻 E3-BL：binary/lib 不是变量；41 µs 在 target 实例/盘组） | 前置：B 的 `build/examples/urma_perf` 与 `/home/tong/umdk_gpu_isolated/lib` 必须可读（请 B `chmod o+r` 或拷公共路径）；仍是 root 700 就**立即回报 blocked，不再跑我们自己的臂**（target 侧已穷尽）。①记录 binary/lib 的 md5、文件清单、`ldd`/`readelf -d`、版本/strings；②target 完全照 B：CPU2–7/NUMA0、strip128K、`-I 8192,8192,640,4194304 -O 4194304 -s 10 -R 128 -C 64`、**不加 `-q/-c/-n`**；③同一 target 同窗口四组合各 3×30s：**B binary+B lib / B binary+我们 lib / 我们 binary+B lib / 我们 binary+我们 lib**，client 参数 `-o4194304 -T1 -b1 -t30 -n1 -g0 -l0 -M cpu`、`REGION_REG=1`、`MAX_IO_SIZE=4194304`；④若 B binary+B lib 复现 ~170，用该组合（或 B lib）在 node4 跑我们的 Mooncake：node4 无我方 `mooncake_client_runtime`（从 node1/node3 拷同 build 或本地 build），master 用备用端口避开同事 50056/8086/9006，NoF segment 注册到**同一 target**，预填 220k d keys，Mooncake d 1/1 3×60s，看 transfer 是否从 208–213 降到 ~170；⑤结论只回答：41 µs 是 binary 还是 lib、Mooncake 是否同降。不改源码（最多 env/`LD_LIBRARY_PATH`）；不 kill 他人；异常保留证据。产物 R60 + 台账 §96 + INDEX + 五段式回执。**2026-11-10 回执（推翻 E3-BL 结论）：前置条件写错——`/home/tong/umdk_gpu_isolated` 虽是 root 700，但测试一直用 `sudo -n`（B 也是 root），root 只读即可拿到全部真身，未拷贝/未改权限/未动进程。关键事实：B 的 client binary md5 `66591e5e…` 与我们 `5717f5a4…` 同 commit（树 HEAD e12b7cb213a9…，差 200 B）；B 的 `liburma.so.0.0.3` md5 `36b0ab10…` 与我们 netlab 库**同一个文件**；target binary 都是 e12b7cb（B `c2af6b37…` vs 我们 `e7440ae0…`）。**四组合（B/我们 binary × B/我们 lib）各 3×30s：C1 210.53 / C2 210.64 / C3 210.70 / C4 210.55，极差 0.17 µs → binary 和 lib 都不是变量。** 同一套客户端打 B 的 `:4420`（10s 锚点）：avg **172.221** / P50 156.80 / P99 389.12 / 22.67 GiB/s / completed 58,034，复现 B 的 170.281（差 1.9 µs）；打我们的 target 是 210.5，**差 38.3 µs、可复现**。**这 38 µs 不在 target 可配参数里**：D1 用 B 的 `nvmf_tgt` 跑我们 5 盘 210.25/211.55；D2 去 `-s` 211.15/210.95/211.41；D3 reactor 搬 NUMA0 210.44/212.30/212.88（更差）——全部 210–212。target 内部计时两边差 ~3 µs（B 73 vs 我们 76 µs；n 与负载混合不同，近似），端到端差 38.3 → **~35 µs 在 target 计时窗口之外**；等效 C2H B ≈38.8 GiB/s vs 我们 ≈28.4（慢 27%）。物理量：numastat 逐位相同；B reactor CPU2–7（NUMA0），我们 12–17（NUMA0，D3）；**（⚠ NIC NUMA 证据待核：`0000:a6:00.0` 在 E3-BJ 里是 node4 的 UB 卡；node2 target 的 `udmac0d1e2` 未验 BDF/NUMA，不能当事实）D3 把 reactor 搬 NUMA0 更差是实测 → reactor NUMA 不是差距来源**；唯一剩余差异 = 盘组（B 21,22,28,29(N0)+91(N2) vs 我们 a1–a4,92 全 N2）。Mooncake d 同窗口未做：①node4 无我方 `mooncake_client_runtime`；②50056/8086/9006 被同事 master 1315494 占；③要往 B 的 target 注册 NoF segment 会改他配置，按约束不做。**下一步只剩盘组：等 B 释放 target 后，用同一套客户端打「B 的 5 盘 + 我们的 target」；若 172 闭环（盘组），若仍 210 则是 B 那个 target 进程的历史状态，再考虑重启他的 target 复测（需他配合）。** 风险：D1 r2 `Worker 0 could not allocate an I/O qpair`（ns 重连竞态）保留未剔除，D1 仅 2 有效轮；为拿锚点用 B 的 binary+lib 连了他的 :4420 跑 1 轮 10s（preflight 在 LBA0 写 4MiB，与他自己的命令行为一致；只连不杀、未改配置、4420 仍在跑）；`sudo -n` root 只读了他的私有目录（未拷贝/未改权限）。环境已还原（4426/4436 无监听、a1–a4,92 回 nvme0–4、hugepages 225,824 free、B 的 21/22/28/29/91 全程 vfio 未动、node1/3 未登录）。产物 R60 54 文件/0.089MB；台账 §96；INDEX R60 + R59 加 ⚠ 更正。 |
 | E3-BN | 2026-11-10 | **盘组 A/B：同一 target 配置换 B 的 5 盘（21/22/28/29/91），必要时复刻 B 的 target 配置；胜出盘组上跑 Mooncake d**（node2/4 独占） | 已完成（结论已被 E3-BO 修正：strip 是主因；根复合体差异只在 strip128 成立） | 前置：B 的 4420 target 已释放（仍在听就回报，不 kill）；B 的 5 盘无 mount/holders；B 的 target 脚本/config 可 `sudo -n` root 只读。**只跑决定性一步：Arm B = 同 target 配置（R60 打 210.5 那套）+ B 的 5 盘（21,22,28,29,91），2–3×30s；Arm A 不重跑，直接用 R60 的 210.5 作基线（同窗口疑虑大就加 1×30s 校验）。** 耗时：换盘/RAID0/起 target 5–8 min + 跑测 2 min + 还原 3 min ≈ **10–15 min**。**若 Arm B ~172 → 盘组定案 → 再加 Mooncake（NoF 注册 + 220k d keys + d 1/1 3×60s，+8–10 min，总计 20–25 min）；若 Arm B ~210 → 盘组不是原因，停并回报；Arm C（B exact target + B 盘）另派，不在本轮。** 重建 RAID0 会清空测试 namespace（用户已确认独占）。不改源码；不 kill 他人；异常保留。产物 R61 + 台账 §97 + INDEX + 五段式回执。**2026-11-10 回执：根因=盘挂在哪条 PCIe 根复合体。BAAB（同 target 配置只换盘）：A 我们 a1–a4,92 全 N2 → 211.25；B B 的 21,22,28,29,91（4×N0+1×N2）→ 169.58；A2 换回 → 212.50；A/A2 差 1.25 µs，B 快 42–43 µs。4 盘对照：21,22,28,29（root 20:xx/N0）198.3 µs/20.1 GiB/s（单盘 5.03）；a1–a4（root a0:xx/N2）259.8 µs/15.4 GiB/s（单盘 3.85）→ NUMA2 根复合体单盘慢 31%；10 块盘型号/固件/磨损/温度/通电时间逐项相同。5 块全 N0（21,22,28,29,2a）168.68 µs/23.1 GiB/s，比 B 组快 0.9、比旧组快 42.6（−20.1%），全是我们自己的盘。** 历史修订：R52“42–47 µs 属阵列带宽边界”方向对、命名改为“盘侧根复合体 NUMA”；R56“reactor 跨 NUMA 有害”作废（本实验 reactor NUMA 无影响，N0×4 用 NUMA2 reactor 反而更快）。**Mooncake d 未跑（blocked）：回执查的是 `mooncake_client`（node4 Oct26 strings 命中 0、node2 client_runtime 命中 0、node3 目录不存在），但第七次跑的是 `stress_cluster_bench`——E3-BF 11:23 预检还在 node4 见 md5 `b6caa5f0…`；“都不存在”证据不足，先按第七次脚本/日志里的绝对路径+md5 定向核查，确认后再重建。** 风险：按用户“独占、佛挡杀佛”授权 TERM 了 B 的 4420 target（pid 2054935，按 PID 精确 TERM、未 -9/未 pkill，`/tmp/nvmf_tgt.log` 1.1MB/974 dump 保留）；重建 RAID0 多次清空测试 namespace（已授权）；两次 r2 qpair 分配失败（切盘/重启 target 后启动瞬态）保留未剔除；2b 系统盘全程 nvme、root/home 写测试 OK；端口 4426/4436；node1/3 未登录。产物 R61 65 文件/0.10MB；台账 §97；INDEX R61。**建议：node2 性能盘组改用 21,22,28,29,2a（全 N0），弃用 a1–a4,92（全 N2）；91/92 只作容量/对照；《机器与使用说明》§4.4.1“同 NUMA 无惩罚”需改（待用户点头）。** **2026-11-11 E3-BO 修正：本任务所有臂都是 strip=128；strip 是主因。strip 64K 时方向反转（N0+64K Mooncake 237.9 vs N2+64K 209.8），R61 的“N2 根复合体慢 31%”只在 strip128 成立。盘组建议仍成立（128K 下 N0 21,22,28,29,2a 最快），但不能说“N2 永远慢”。** |
 | E3-BO | 2026-11-10 | **补 NUMA 原始证据；找回/重建 bench；新 N0 盘组跑 Mooncake d 1/1**（node2/4 独占） | 已完成（推翻 E3-BN：strip 64K→128K 是主因；42–47 µs 是口径错配） | ①**先补只读原始证据**（不许再用转述）：`lscpu -e` 看 CPU 156–161/12–17 的 NUMA；`ls -l /sys/class/uburma/udmac0d1e2/device` 得其 BDF，再 `cat /sys/bus/pci/devices/<BDF>/numa_node`；5 盘逐 BDF root port + `numa_node`；贴命令与原始输出。②按第七次脚本/日志的**绝对路径+md5**找 `stress_cluster_bench`（E3-BF 11:23 在 node4 见过 md5 `b6caa5f0…`）；找不到再重建（分支 `nof-urma-v2-bench-merge`、SPDK e12b7cb、CUDA 12.9、带 staging timing+gpu_mode），记录 md5。③target=21,22,28,29,2a 全 N0、**strip 64K 生产口径**起服务；bare urma_perf 2×30s 得 N0+64K 基线；同 target 注册 Mooncake NoF、预填 220k d keys、d 1/1 3×60s（warmup45/start0/sleep0，staging timing）；**必须给与 E3-BE 同口径拆解表：transfer(mean/P50)+submit+wait、copy(scatter)、read、query、total、恒等式闭合，不是只给 total**。④若 transfer→~169 则 42–47 µs gap 关闭；仍 ~211 则 Mooncake 层另有开销；**N0 下降不明显时，换回 a1–a4,92 同配置跑 N2 对照 3×60s（+10–15 min）**。可选再跑 strip 128 对照。不改源码（除重建）；不 kill 他人；异常保留。产物 R62 + 台账 §98 + INDEX + 五段式回执。**2026-11-11 回执：42–47 µs 的真正来源是 RAID0 strip 尺寸，不是盘组 NUMA。同一 N0 盘组/同 target/同客户端，strip 64K→128K：裸 227.3→168.7（−58.6）、Mooncake transfer 237.9→175.6（−62.3）；裸和 Mooncake 同步移动 ~60 µs → 在盘阵列侧，与 Mooncake 层无关。strip 64K 下盘组方向反转：N0+64K Mooncake 237.9 慢于 N2+64K 209.8（+28.1），R61 的“N2 根复合体慢 31%”只在 strip128 成立。E3-BE 208.8–213.5 被 N2+64K 208.2/210.1/211.2 复现（跨会话 ≤1.4）。所谓 42–47 gap 是拿 strip128 裸 168.7 减 strip64 Mooncake 208–213 的口径错配；同盘组同 strip 下 Mooncake 只比裸慢 6.9–10.6 µs（N0 两格；N2+64K 的裸值缺失）。建议 target strip 64K→128K：N0 组 d 1/1 total 620.3–623.8→560.7（−9.6%）、transfer −26.2%，不换盘组/不改代码；需产品侧确认生产口径。** 证据：d 拆解（N0+64K 3×60s transfer 237–239、N2+64K 208–211、N0+128K 175.6 仅 1 轮；submit 3.6–4.1、copy 339.7–340.7 不变，差异全在 wait；恒等式闭合）；裸 N0+64K avg 232.57/221.96（2×30s）；NUMA 原始证据 `lscpu` CPU156–161 全 NODE2、盘 21/22/28/29/2a/2b=N0、91/92/a1–a4=N2、root port 21/22/28/29→20:00/02/10/12、2a→20:14、91/92→90:04/06、a1–a4→a0:00/02/04/06；bench 找到 `~/nds/Mooncake/build/mooncake-store/benchmarks/stress_cluster_bench` md5 `b6caa5f0…`（335,277,696 B，Nov 9 11:12），未重建。更正：`udmac0d1e2` numa=0x01 是 node-id 语义（UB 虚拟设备 00007，无 PCI BDF），R60 的 NUMA2 是 RDMA 卡 `rocep166s0f0`=0000:a6:00.0；R61“bench 不存在”错误（只查了 mooncake_client）。未做：N0+128K 仅 1×60s、N2+128K 缺失、2×2 只有 3 格；strip 为何影响 qpair（entries 34→66）未拆到队列深度 vs 32K/64K 命令效率。⚠ iostat 行 287,012 请求 ÷ 18,377,408 ops = 64.0，不是 128.05，分母待核；不影响 strip 主结论。风险：①误把 node2 换盘脚本发到 node4 执行（09:27，node4 a1–a4,92 被 vfio 约 70s，已全部恢复 nvme、root/home 正常、dmesg 0 错误；后续加 hostname 校验）；②master NoF 段从 :4421 残留改为 :4426（清空后重注册；若别人依赖原段需重注册）；③按 PID 只杀我方 3 个 target，未用 pkill，同事进程未动；④裸基线用 B 的 urma_perf+lib（R60 已证非变量）。环境还原：node2+node4 12 盘全 nvme、nvmf_tgt=0、4420/4426/4436/4457 无监听、2b 系统盘 nvme、hugepages 227,253 free、node1/3 未登录。 |
+| E3-BP | 2026-11-11 | **补齐 strip/盘组缺失格（每臂 2 轮）**：N2+128K（裸+Mooncake）、N0+128K Mooncake、B组4N0+1N2+128K Mooncake；可选 N2+64K 裸 | 待执行 | 目标：回答“是否只有全 N0+128K 才能到 ~169/176”。**P0**：N2 组 a1–a4,92 + strip128，裸 2×30s + Mooncake 2×60s（补齐 2×2）；**P1**：N0 组 21,22,28,29,2a + strip128，Mooncake 2×60s（确认 175.6）；**P2**：B 组 21,22,28,29,91 + strip128，Mooncake 2×60s（4/5 N0 是否够）；**P3 可选**：N2+64K 裸 2×30s。口径同 E3-BO：220k d keys、warmup45、start0、sleep0、staging timing；**master 保持 node4（与 E3-BO 同），不要切 node2**；每臂给 transfer/submit/wait/copy/read/query/total + 恒等式；2 轮即可。每个盘组重建 RAID0 会清空 namespace，需重新 prefill 220k。不改源码；不 kill 他人；异常保留。产物 R63 + 台账 §99 + INDEX + 五段式回执。 |
 
 ---
 
@@ -4720,3 +4721,58 @@ readlink -f /sys/bus/pci/devices/0000:21:00.0 | sed 's#/0000:.*##'     # root po
 
 - **target strip 从 64K 改成 128K**：N0 组 d 1/1 total **620.3–623.8 → 560.7 µs（−9.6%）**、transfer **−26.2%**；不换盘组、不改代码。
 - 代价：生产口径变化；且 N0+128K 仅 1 轮、N2+128K 缺失，建议先补 3 轮 + 完整 2×2 再定稿。
+
+---
+
+# E3-BP（待执行 · 2026-11-11）· 补齐 strip/盘组缺失格（每臂 2 轮）
+
+> 用户要求：未测的补测，**两轮就行，不要太多轮**。
+> 目标：回答“**是否只有全 N0 + strip128 才能到 ~169/176？**”补完 2×2（盘组 × strip）和 4/5 N0 这一格。
+
+## 现有数据（缺口）
+
+| 盘组 | strip | 裸 | Mooncake | 缺 |
+| --- | --- | --- | --- | --- |
+| 全 N0（21,22,28,29,2a） | 64K | 227.3（2×30s） | 237.9（3×60s） | — |
+| 全 N0 | 128K | 168.7（R61） | 175.6（**仅 1×60s**） | **补 2 轮** |
+| 4×N0+1×N2（21,22,28,29,91） | 128K | 169.58（R61） | **未测** | **补 2×60s** |
+| 全 N2（a1–a4,92） | 64K | **未测** | 208.2/210.1/211.2（3×60s） | 可选补裸 |
+| 全 N2 | 128K | 211.25（R61） | **未测** | **补裸 + Mooncake 2 轮** |
+
+## 一、P0：N2 + strip128（补齐 2×2）
+
+- 盘组 a1,a2,a3,a4,92；RAID0 **strip 128**；target 参数同 E3-BO/R61；端口 4426/4436；`ps` 确认 reactor。
+- 裸 `urma_perf` 4MB b1T1 **2×30s**。
+- 同 target 注册 Mooncake NoF、预填 220k d keys（failed=0）、d 1/1 **2×60s**（staging timing）。
+- 记录 transfer/submit/wait/copy/read/query/total、恒等式、iostat ops/req、5 盘分布。
+
+## 二、P1：N0 + strip128 Mooncake（确认 175.6）
+
+- 盘组 21,22,28,29,2a；strip 128；同配置 target。
+- Mooncake d 1/1 **2×60s**（bare 168.7 已有，可加 1×30s 校验，不必 2 轮）。
+- 记录同 P0。
+
+## 三、P2：4×N0+1×N2 + strip128 Mooncake（4/5 N0 是否够）
+
+- 盘组 21,22,28,29,91；strip 128；同配置 target。
+- Mooncake d 1/1 **2×60s**（bare 169.58 已有）。
+- 若 ~175–180 → 4/5 N0 足够，不必全 N0；若 ~210 → 第 5 块盘在 N2 有影响。
+
+## 四、P3（可选）：N2 + strip64 裸 2×30s
+
+- 补齐“同 strip 下 Mooncake 开销”在 N2 的裸值；时间不够可跳过。
+
+## 五、口径与约束
+
+- **master 保持 node4（与 E3-BO 同）**，不要切 node2；query 仍不可与 E3-BE 直接比。
+- 220k keys、4MB、1/1、sleep0、warmup45、start0；`MC_BENCH_STAGING_TIMING` + `PATH_TIMING`。
+- 每切一次盘组重建 RAID0 会清空 namespace，需重新 prefill 220k；记录 prefill 时长。
+- 每臂 2 轮即可；异常轮保留证据不剔除；不改源码；不 kill 他人；node1/3 不动。
+- 环境变更/回退记清：盘组、strip、target/端口、master NoF 段、hugepages。
+
+## 六、产物 / 回执
+
+- 测试侧：`测试相关资料/第七次测试结果/R63_20261111_d_strip_matrix/`；本地 `D:\gds性能\第七次测试\`。
+- 台账 §99；INDEX R63；五段式回执。
+- 必须给：每臂 2 轮原始值 + 均值、transfer/submit/wait/copy/read/query/total、恒等式、iostat、prefill 时长、盘组/ strip、结论（只有全 N0+128K？还是 4/5 N0 也行？N2+128K 是否也降？）。
+- 预计耗时：P0（重建+prefill+裸 2×30s+Mooncake 2×60s）约 12–18 min；P1 约 8–12 min；P2 约 8–12 min；P3 约 5–8 min。**优先 P0+P1，时间够再做 P2；P3 可选**；总计 25–45 min。
