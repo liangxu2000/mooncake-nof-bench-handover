@@ -179,7 +179,7 @@
 | E3-BP | 2026-11-11 | **补齐 strip/盘组缺失格（每臂 2 轮）**：N2+128K（裸+Mooncake）、N0+128K Mooncake、B组4N0+1N2+128K Mooncake；可选 N2+64K 裸 | 已取消（用户改为直接跑官方 d，2026-11-11） | 目标：回答“是否只有全 N0+128K 才能到 ~169/176”。**P0**：N2 组 a1–a4,92 + strip128，裸 2×30s + Mooncake 2×60s（补齐 2×2）；**P1**：N0 组 21,22,28,29,2a + strip128，Mooncake 2×60s（确认 175.6）；**P2**：B 组 21,22,28,29,91 + strip128，Mooncake 2×60s（4/5 N0 是否够）；**P3 可选**：N2+64K 裸 2×30s。口径同 E3-BO：220k d keys、warmup45、start0、sleep0、staging timing；**master 保持 node4（与 E3-BO 同），不要切 node2**；每臂给 transfer/submit/wait/copy/read/query/total + 恒等式；2 轮即可。每个盘组重建 RAID0 会清空 namespace，需重新 prefill 220k。不改源码；不 kill 他人；异常保留。产物 R63 + 台账 §99 + INDEX + 五段式回执。 |
 | E3-BQ | 2026-11-11 | **官方场景 d 1/1：N0 组 21,22,28,29,2a + strip128，master=node2、target 4457、标准口径** | 已完成（回执已收；官方 d 1/1） | 用户拍板：不补测，直接按 N0+strip128 跑原来的场景 d。①precheck（node2/4 独占、无他人进程、盘/端口）；②target N0 组 `21,22,28,29,2a`、RAID0 **strip128**、listener **4457**；③master=node2（50056/9006/8086），清旧 NoF 段（4426/4421）并注册新 target 4457；④预填 d 220k（若 N0+128K 的 keys 仍可读可复用，否则重灌，failed=0）；⑤node4 客户端 d 1/1 **3×60s**（220k、4MB、warmup45、start0、sleep0、`MC_BENCH_STAGING_TIMING`+`PATH_TIMING`）；⑥必须给拆解：transfer/submit/wait/copy/read/query/total + 恒等式 + iostat ops/req=64 + 5 盘分布；对照 E3-BE 208.8–213.5 与 E3-BO N0+128K 175.6（1轮）。**注意：master 从 node4 改回 node2 后 query 回到 ~108–138，total 预计 ~620–650，不是 E3-BO 的 560.7；transfer 预期 ~175–180。** 不改源码；不 kill 他人；异常保留。产物 R64 + 台账 §100 + INDEX + 五段式回执。**2026-11-11 回执：官方口径 transfer 178.5 µs（P50 178），比 E3-BE 208.8–213.5 低 31.0（−14.5%）；wait 169.8（−33.7）、submit 4.4（+0.8）、copy 340.0（不变）、read 522.6（−30.1）、query 108.0（远端口径，同级）、total 631.9（−35.5，−5.3%）、6.14 GiB/s（+3~5%）。恒等式闭合。3×60s failed=0，94,804/93,750/94,447 queries。target e7440ae0/pid 3641286/reactor 156,159,160,157,161,158(NUMA2)/strip128/4457；盘 21→20:00.0、22→20:02.0、28→20:10.0、29→20:12.0、2a→20:14.0 全 numa0。iostat：Raid0 32.01 ops/req、盘级 64.02（strip128 自洽；规格里的 64 是 strip64 口径，不是异常）。prefill 复用旧 keys（来自 E3-BE strip64 阵列，未重灌；--verify=false；偏移 880GB≪38.4TB，num_blocks 差 640 块/320KB）；这是唯一口径差异，正式全表建议重灌。transfer 比 E3-BO 175.6 高 2.9µs（未定因：1 轮噪声/旧 key 布局），<3µs 不影响主结论。NoF 段 1 条@4457（E3-AX 已注册），本轮幂等重注册；清 4426/4421 removed=0（在 node4 master，不在 node2）。未 kill 他人；环境还原（nvmf_tgt=0、4457/4426/4421 无监听、5 盘回 nvme、hugepages 227,253 free、dmesg 0 错误、node1/3 未登录）。HANDOVER 状态由此处手动更新（测试侧文件在工作目录外，工具拒绝写入）。** |
 | E3-BR | 2026-11-11 | **午休块：N0+128K 上 c/d 8 格（1/1、1/16、16/1、16/16）**，复用 E3-BQ 的 target/keys | 已合并到 E3-BS（2026-11-11） | 前置：E3-BQ 完成，target N0+128K/4457、master node2、220k keys 仍在；不重建 target、不重灌（除非 key 不在）。①c 1/1 3×60s（GDS；给 query/read/total + GDS 路径，无 copy 段）；②d/c 1/16 各 3×60s；③d/c 16/1 各 3×60s；④d/c 16/16 各 3×60s；全部 clean（sample=0），d 1/1 可另开 staging timing。每格记 avg/P50/P90/P99/P99.9/max、GiB/s、query/read、target iostat ops/req、5 盘分布。⑤若时间：a/b 1/1+16/16 各 3×60s 补齐 16 格（a/b 不受 strip/盘组影响，可复用 R51，非必须）；⑥可选 strip256 d 1/1 2×60s（需重建+prefill，最后做）。不改源码；不 kill 他人；异常保留。产物 R65 + 台账 §101 + INDEX + 五段式回执。 |
-| E3-BS | 2026-11-11 | **N0+128K 全 16 格（a/b/c/d × 1/1、1/16、16/1、16/16）+ 1/1 拆解**（午休 2h 窗口） | 待执行 | 用户拍板：统一按 N0+strip128 规格，把 a/b/c/d 全矩阵跑一遍，1/1 打点拆解。前置：node2/4 独占；target N0 组 `21,22,28,29,2a`、strip128、listener 4457；master=node2（50056/9006/8086），清旧 NoF 4426/4421 并注册 4457。①a/b memory 32GiB、3000 keys；c/d NoF 220k keys；预填 failed=0；②按第六次矩阵脚本，a/b/c/d × 4 并发 × **3×60s**（1/1 sleep0，其余 sleep50；4MB、warmup45、start0；clean sample=0）；③**1/1 四格都带拆解**：d staging transfer/submit/wait/copy/read/query/total；b staging（如有 copy）；c GDS query/read/total+GDS 路径；a GDR query/read/total；恒等式；④每格 avg/P50/P90/P99/P99.9/max、GiB/s、iostat ops/req、5 盘分布；⑤对照 R51（旧 N2+64K）与 E3-BE/E3-BO；⑥若时间不足，按 a/b/c/d 1/1 → 1/16 → 16/1 → 16/16 顺序，**先保 1/1**。不改源码；不 kill 他人；异常保留。产物 R66 + 台账 §102 + INDEX + 五段式回执；**结果必须填入 `C:\Users\l00955908\Desktop\mooncake主仓\nds\测试相关资料\第七次测试结果\benchmark_Mooncake_第七次测试.xlsx`（先备份、只改 4MB 目标格、3 轮均值、记录前后 md5），并写 `...\第七次测试结果\第七次测试_结果_20261111.md`（16 格全表 + 1/1 拆解 + 对照 + 异常）。** |
+| E3-BS | 2026-11-11 | **N0+128K 全 16 格（a/b/c/d × 1/1、1/16、16/1、16/16）+ 1/1 拆解**（午休 2h 窗口） | 已完成（回执已收；16 格 + xlsx + md） | 用户拍板：统一按 N0+strip128 规格，把 a/b/c/d 全矩阵跑一遍，1/1 打点拆解。前置：node2/4 独占；target N0 组 `21,22,28,29,2a`、strip128、listener 4457；master=node2（50056/9006/8086），清旧 NoF 4426/4421 并注册 4457。①a/b memory 32GiB、3000 keys；c/d NoF 220k keys；预填 failed=0；②按第六次矩阵脚本，a/b/c/d × 4 并发 × **3×60s**（1/1 sleep0，其余 sleep50；4MB、warmup45、start0；clean sample=0）；③**1/1 四格都带拆解**：d staging transfer/submit/wait/copy/read/query/total；b staging（如有 copy）；c GDS query/read/total+GDS 路径；a GDR query/read/total；恒等式；④每格 avg/P50/P90/P99/P99.9/max、GiB/s、iostat ops/req、5 盘分布；⑤对照 R51（旧 N2+64K）与 E3-BE/E3-BO；⑥若时间不足，按 a/b/c/d 1/1 → 1/16 → 16/1 → 16/16 顺序，**先保 1/1**。不改源码；不 kill 他人；异常保留。产物 R66 + 台账 §102 + INDEX + 五段式回执；**结果必须填入 `C:\Users\l00955908\Desktop\mooncake主仓\nds\测试相关资料\第七次测试结果\benchmark_Mooncake_第七次测试.xlsx`（先备份、只改 4MB 目标格、3 轮均值、记录前后 md5），并写 `...\第七次测试结果\第七次测试_结果_20261111.md`（16 格全表 + 1/1 拆解 + 对照 + 异常）。** **2026-11-11 回执：16 格 48 轮 failed=0；d 1/1 = 630.29 µs / 6.16 GiB/s（R51 657.45/5.95，−3.47%），transfer 176.62、wait 168.26、copy 339.81 不变；与 E3-BQ 178.5/631.9 差 1.9/1.6 µs，独立互证。a/b 16/1、16/16 与 R51 逐位相同；c/d 收益只在 1/1（d −3.47%）与 1/16（c −2.20%、d −2.01%），16/1/16/16 ≤0.3%。a/b/c 1/1 略差（a +1.38%、b +4.16%、c +2.46%），b +22.1 µs 未定因（疑 memory 段 90% 占用/key 落点；16/16 逐位相同 ⇒ 非环境漂移）。16/16 四场景 keys/s≈3248、GiB/s≈12.69 → 客户端/UB 上限。prefill：a/b 3000/13s、c/d 220k/464s 全重灌。xlsx Sheet1 K3:U18 已填（16×11，Value2），备份 `bak_20261111_1300`，md5 `55447659…`→`d1ad286a…`，新会话回读 16 行通过；md 已写。**口径 sheet 仍写 R51/40 样本，与 R66/48 不一致，待用户点头更新。** 风险：未 kill 他人；只 PID 停我方 target；环境还原（nvmf_tgt=0、4457 无监听、5 盘回 nvme、hugepages 227,253 free、dmesg 0 错误、node1/3 未登录）。HANDOVER 状态由指挥侧手动更新。** |
 
 ---
 
@@ -4998,3 +4998,59 @@ readlink -f /sys/bus/pci/devices/0000:21:00.0 | sed 's#/0000:.*##'     # root po
 - 环境回退：node2+node4 `nvmf_tgt=0`；4457/4426/4421 无监听；5 盘回 nvme0–4（node2 六块全 nvme）；node2 50056/9006 仍我方 master；hugepages 227,253 free（前后一致）；dmesg IO 错误 0；node1/node3 未登录。
 - 台账 §100（§99 预留给已取消的 E3-BP）；产物 R64。
 - 备注：HANDOVER 在测试侧工作目录外，工具拒绝写入；状态由指挥侧手动更新（本节即更新）。
+
+## 回执（2026-11-11，E3-BS 全 16 格，已收）
+
+**结论：新规格 N0+strip128 下，d 1/1 = 630.29 µs / 6.16 GiB/s，比 R51 旧规格（N2+64K，657.45 / 5.95）快 3.47%；transfer 208.8–213.5 → 176.62、wait 202–205 → 168.26、copy 不变（339.81）。与 E3-BQ 的 178.5/631.9 差 1.9/1.6 µs，两次独立测量互证。**
+
+### 一、16 格（avg µs / GiB/s；48 轮全部 failed=0、status[read_ok] 100%）
+
+| 场景 | 1/1 | 1/16 | 16/1 | 16/16 |
+| --- | --- | --- | --- | --- |
+| a | 427.66 / 9.16 | 5209.87 / 11.98 | 4924.82 / 12.69 | 78756.82 / 12.69 |
+| b | 553.94 / 7.09 | 5741.84 / 10.87 | 5481.69 / 11.40 | 86836.95 / 11.51 |
+| c | 476.45 / 8.19 | 5380.87 / 11.62 | 4924.91 / 12.69 | 78778.35 / 12.69 |
+| d | **634.65 / 6.16** | 7462.74 / 8.45 | 5482.17 / 11.40 | 86525.99 / 11.55 |
+
+- 完整 min/P50/P90/P99/P99.9/P99.99/Pmax + K(keys/s)/L(queries/s) 在 `xlsx_rows.csv` 与结果 md；d 1/16 的 P99.99 按 R51 口径记 `n<10000`（三轮 queries 7,880/8,128/8,121）。
+
+### 二、1/1 四格拆解（mean µs，3 轮均值）
+
+| 场景 | query | read | total | transfer(get) | submit | wait | copy(scatter) | copy_us |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| a（GDR/peermem） | 96.29 | 324.71 | 422.13 | — | — | — | — | — |
+| b（memory+staging） | 103.22 | 445.12 | 549.49 | 101.98 | 6.35 | 91.14 | 338.43 | 335.30 |
+| c（NoF+GDS） | 98.90 | 370.88 | 470.91 | — | — | — | — | — |
+| d（NoF+staging） | 108.62 | 520.40 | 630.29 | **176.62** | 4.22 | **168.26** | **339.81** | 336.30 |
+
+- 恒等式：b sp_sum−sp_total=−1.14、read−get−scatter=+4.71；d −1.05 / +3.97；alloc/prep/free 全 0。
+
+### 三、与 R51 逐格差（1/1、1/16、16/1、16/16）
+
+| 场景 | 1/1 | 1/16 | 16/1 | 16/16 |
+| --- | --- | --- | --- | --- |
+| a | +1.38% | +0.68% | −0.00% | −0.00% |
+| b | +4.16% | −0.61% | −0.02% | +0.03% |
+| c | +2.46% | −2.20% | −0.28% | −0.07% |
+| d | **−3.47%** | **−2.01%** | −0.04% | +0.00% |
+
+- a/b 的 16/1、16/16 与 R51 逐位相同（a 4924.82 vs 4924.83、78756.82 vs 78757.02）；16/16 四场景 keys/s≈3248、GiB/s≈12.69 → **客户端/UB 侧同一上限**。
+- c/d 的收益只在 **1/1**（仅 d −3.47%）与 **1/16**（c −2.20%、d −2.01%）；16/1/16/16 差 ≤0.3%，被并发上限掩盖。
+- a/b/c 的 1/1 略差（a +1.38%、b +4.16%、c +2.46%），b +22.1 µs 未定因；同窗口 16/16 逐位相同 ⇒ 非环境漂移；疑 memory 段 90% 占用下 key 落点差异，未做实验。
+
+### 四、iostat / 预填 / 产物
+
+- iostat（48 轮差分）：Raid0 122,031,200 ops / 15,253,900 MiB；5 盘各 10.0%（极差 175 op = 0.0007%）；strip128 下 Raid0 层 ops/req=32、盘级=64、read_MiB/请求=4.00，自洽。
+- 预填：a/b 3,000 keys failed=0 / 13 s；c/d 220,000 keys failed=0 / **464 s（完全重灌，未复用 E3-BQ 旧 keys）**。
+- 交付表：`benchmark_Mooncake_第七次测试.xlsx` 写 `Sheet1!K3:U18`（16×11），Excel COM 只写 Value2；备份 `…bak_20261111_1300`；md5 `55447659…`→`d1ad286a…`（16,266→17,298 B）；新开会话重读 16 行核对通过。
+- md：`第七次测试_结果_20261111.md`（16 格全表 + 1/1 拆解 + R51/E3-BE/E3-BQ 对照 + 风险 + 结论）。
+- R66：79 文件 / 92.66 MB；台账 §102；INDEX R66。
+
+### 五、未做 / 风险
+
+- **口径 sheet 未更新**：仍写“第六次测试正式表 / 数据来源 R51 / 1/1 与 16/1 各 3 轮、1/16 与 16/16 各 2 轮、共 40 样本”，与 Sheet1 的 R66 数据（每格 3 轮、48 样本）不一致。按“只填 4MB sheet”约束未改，**需用户点头后更新**。
+- 工作簿实际只有Sheet1（4MB）+ 口径 两个 sheet，没有 8MB sheet。
+- 未跑 8MB/多实例/strip256；未改源码；未改交付表结构。
+- 16/16 的 d 尾部（P99 507,510 / Pmax 1,944,853 µs）与 R51 同量级但更差，沿用“未定性”，未追因。
+- 未 kill 他人；只按 PID 停我方 target（pid 3668015）；未重启任何 master；环境还原：nvmf_tgt=0、4457/4426/4421 无监听、5 盘回 nvme0–4、2b 全程 nvme、hugepages 227,253 free、dmesg 0 错误、node1/3 未登录。
+- HANDOVER 状态由指挥侧手动更新（本节即更新）。
