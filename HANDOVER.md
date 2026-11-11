@@ -179,7 +179,7 @@
 | E3-BP | 2026-11-11 | **补齐 strip/盘组缺失格（每臂 2 轮）**：N2+128K（裸+Mooncake）、N0+128K Mooncake、B组4N0+1N2+128K Mooncake；可选 N2+64K 裸 | 已取消（用户改为直接跑官方 d，2026-11-11） | 目标：回答“是否只有全 N0+128K 才能到 ~169/176”。**P0**：N2 组 a1–a4,92 + strip128，裸 2×30s + Mooncake 2×60s（补齐 2×2）；**P1**：N0 组 21,22,28,29,2a + strip128，Mooncake 2×60s（确认 175.6）；**P2**：B 组 21,22,28,29,91 + strip128，Mooncake 2×60s（4/5 N0 是否够）；**P3 可选**：N2+64K 裸 2×30s。口径同 E3-BO：220k d keys、warmup45、start0、sleep0、staging timing；**master 保持 node4（与 E3-BO 同），不要切 node2**；每臂给 transfer/submit/wait/copy/read/query/total + 恒等式；2 轮即可。每个盘组重建 RAID0 会清空 namespace，需重新 prefill 220k。不改源码；不 kill 他人；异常保留。产物 R63 + 台账 §99 + INDEX + 五段式回执。 |
 | E3-BQ | 2026-11-11 | **官方场景 d 1/1：N0 组 21,22,28,29,2a + strip128，master=node2、target 4457、标准口径** | 已合并到 E3-BS（2026-11-11） | 用户拍板：不补测，直接按 N0+strip128 跑原来的场景 d。①precheck（node2/4 独占、无他人进程、盘/端口）；②target N0 组 `21,22,28,29,2a`、RAID0 **strip128**、listener **4457**；③master=node2（50056/9006/8086），清旧 NoF 段（4426/4421）并注册新 target 4457；④预填 d 220k（若 N0+128K 的 keys 仍可读可复用，否则重灌，failed=0）；⑤node4 客户端 d 1/1 **3×60s**（220k、4MB、warmup45、start0、sleep0、`MC_BENCH_STAGING_TIMING`+`PATH_TIMING`）；⑥必须给拆解：transfer/submit/wait/copy/read/query/total + 恒等式 + iostat ops/req=64 + 5 盘分布；对照 E3-BE 208.8–213.5 与 E3-BO N0+128K 175.6（1轮）。**注意：master 从 node4 改回 node2 后 query 回到 ~108–138，total 预计 ~620–650，不是 E3-BO 的 560.7；transfer 预期 ~175–180。** 不改源码；不 kill 他人；异常保留。产物 R64 + 台账 §100 + INDEX + 五段式回执。 |
 | E3-BR | 2026-11-11 | **午休块：N0+128K 上 c/d 8 格（1/1、1/16、16/1、16/16）**，复用 E3-BQ 的 target/keys | 已合并到 E3-BS（2026-11-11） | 前置：E3-BQ 完成，target N0+128K/4457、master node2、220k keys 仍在；不重建 target、不重灌（除非 key 不在）。①c 1/1 3×60s（GDS；给 query/read/total + GDS 路径，无 copy 段）；②d/c 1/16 各 3×60s；③d/c 16/1 各 3×60s；④d/c 16/16 各 3×60s；全部 clean（sample=0），d 1/1 可另开 staging timing。每格记 avg/P50/P90/P99/P99.9/max、GiB/s、query/read、target iostat ops/req、5 盘分布。⑤若时间：a/b 1/1+16/16 各 3×60s 补齐 16 格（a/b 不受 strip/盘组影响，可复用 R51，非必须）；⑥可选 strip256 d 1/1 2×60s（需重建+prefill，最后做）。不改源码；不 kill 他人；异常保留。产物 R65 + 台账 §101 + INDEX + 五段式回执。 |
-| E3-BS | 2026-11-11 | **N0+128K 全 16 格（a/b/c/d × 1/1、1/16、16/1、16/16）+ 1/1 拆解**（午休 2h 窗口） | 待执行 | 用户拍板：统一按 N0+strip128 规格，把 a/b/c/d 全矩阵跑一遍，1/1 打点拆解。前置：node2/4 独占；target N0 组 `21,22,28,29,2a`、strip128、listener 4457；master=node2（50056/9006/8086），清旧 NoF 4426/4421 并注册 4457。①a/b memory 32GiB、3000 keys；c/d NoF 220k keys；预填 failed=0；②按第六次矩阵脚本，a/b/c/d × 4 并发 × **3×60s**（1/1 sleep0，其余 sleep50；4MB、warmup45、start0；clean sample=0）；③**1/1 四格都带拆解**：d staging transfer/submit/wait/copy/read/query/total；b staging（如有 copy）；c GDS query/read/total+GDS 路径；a GDR query/read/total；恒等式；④每格 avg/P50/P90/P99/P99.9/max、GiB/s、iostat ops/req、5 盘分布；⑤对照 R51（旧 N2+64K）与 E3-BE/E3-BO；⑥若时间不足，按 a/b/c/d 1/1 → 1/16 → 16/1 → 16/16 顺序，**先保 1/1**。不改源码；不 kill 他人；异常保留。产物 R66 + 台账 §102 + INDEX + 五段式回执。 |
+| E3-BS | 2026-11-11 | **N0+128K 全 16 格（a/b/c/d × 1/1、1/16、16/1、16/16）+ 1/1 拆解**（午休 2h 窗口） | 待执行 | 用户拍板：统一按 N0+strip128 规格，把 a/b/c/d 全矩阵跑一遍，1/1 打点拆解。前置：node2/4 独占；target N0 组 `21,22,28,29,2a`、strip128、listener 4457；master=node2（50056/9006/8086），清旧 NoF 4426/4421 并注册 4457。①a/b memory 32GiB、3000 keys；c/d NoF 220k keys；预填 failed=0；②按第六次矩阵脚本，a/b/c/d × 4 并发 × **3×60s**（1/1 sleep0，其余 sleep50；4MB、warmup45、start0；clean sample=0）；③**1/1 四格都带拆解**：d staging transfer/submit/wait/copy/read/query/total；b staging（如有 copy）；c GDS query/read/total+GDS 路径；a GDR query/read/total；恒等式；④每格 avg/P50/P90/P99/P99.9/max、GiB/s、iostat ops/req、5 盘分布；⑤对照 R51（旧 N2+64K）与 E3-BE/E3-BO；⑥若时间不足，按 a/b/c/d 1/1 → 1/16 → 16/1 → 16/16 顺序，**先保 1/1**。不改源码；不 kill 他人；异常保留。产物 R66 + 台账 §102 + INDEX + 五段式回执；**结果必须填入 `C:\Users\l00955908\Desktop\mooncake主仓\nds\测试相关资料\第七次测试结果\benchmark_Mooncake_第七次测试.xlsx`（先备份、只改 4MB 目标格、3 轮均值、记录前后 md5），并写 `...\第七次测试结果\第七次测试_结果_20261111.md`（16 格全表 + 1/1 拆解 + 对照 + 异常）。** |
 
 ---
 
@@ -4945,3 +4945,25 @@ readlink -f /sys/bus/pci/devices/0000:21:00.0 | sed 's#/0000:.*##'     # root po
 - `测试相关资料/第七次测试结果/R66_20261111_full16_n0_128k/`；本地 `D:\gds性能\第七次测试\`。
 - 台账 §102；INDEX R66；五段式回执。
 - 必须给：16 格全表、1/1 四格拆解、与 R51 的对照、target/master/NoF 状态、prefill 时长/是否复用、环境回退。
+
+### 5.1 必须填 xlsx（用户指定）
+
+- 文件：`C:\Users\l00955908\Desktop\mooncake主仓\nds\测试相关资料\第七次测试结果\benchmark_Mooncake_第七次测试.xlsx`
+- 步骤：
+  1. 关闭 Excel/WPS；先备份同目录副本 `benchmark_Mooncake_第七次测试.xlsx.bak_<YYYYMMDD_HHMM>`；记录**改动前 md5**。
+  2. 先只读检查 sheet 名、表头、行号；按既有交付表口径：K=keys/s、L=queries/s、M=min、N=avg、O=P50、P=P90、Q=P99、R=P99.9、S=P99.99、T=Pmax、U=吞吐 GiB/s；行 a=R3–6、b=R7–10、c=R11–14、d=R15–18。**以工作簿实际表头/公式为准，发现不一致就停并回报，不要盲写。**
+  3. 只填 **4MB** sheet 的 16 格；**不要动 8MB/其他 sheet**；每格用 **3 轮均值** 填各分位/吞吐（keys/s、queries/s 按原表定义），保留原有格式/公式/批注；写入后**重新打开回读** 16 格，确认数值正确；记录**改动后 md5**。
+  4. 若文件被占用/无权限/公式会丢，停并回报，不要用 `openpyxl` 硬覆盖导致格式损坏；可改用 Excel COM/PowerShell 只改目标单元格。
+- xlsx 里不放 1/1 拆解；拆解放 md。
+
+### 5.2 必须写 md（用户指定）
+
+- 路径：`C:\Users\l00955908\Desktop\mooncake主仓\nds\测试相关资料\第七次测试结果\第七次测试_结果_20261111.md`
+- 内容：
+  1. 规格/环境：N0 组 `21,22,28,29,2a`、strip128、target 4457、master node2、a/b 3000 keys、c/d 220k、bench md5、target/master PID。
+  2. **16 格全表**：每格 avg/P50/P90/P99/P99.9/Pmax、GiB/s、query/read、failed 数；标注 3 轮均值；保留每轮原始值或指向日志。
+  3. **1/1 四格拆解**：a GDR、b staging、c GDS、d staging 的 query/read/total；d 的 transfer/submit/wait/copy；b 的 transfer/copy（如有）；恒等式闭合；target iostat ops/req 与 5 盘分布。
+  4. 对照：R51（旧 N2+64K）逐格差、E3-BE（d transfer 208–213）、E3-BO（N0+128K 175.6/560.7 的 1 轮参考）；明确哪些可比、哪些不可比（master 位置、轮数）。
+  5. 异常/风险：失败格、异常轮、prefill 时长/是否复用、环境变更与回退。
+  6. 结论：新规格下 c/d 的收益是否在 4 个并发格成立；a/b 是否基本不变；是否建议采用 N0+128K；不要把 E3-BO 的 560.7 当官方 total。
+- 本地副本：指挥侧收到后放 `D:\gds性能\第七次测试\`；测试侧 md 先按上述路径写。
