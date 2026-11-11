@@ -177,8 +177,9 @@
 | E3-BN | 2026-11-10 | **盘组 A/B：同一 target 配置换 B 的 5 盘（21/22/28/29/91），必要时复刻 B 的 target 配置；胜出盘组上跑 Mooncake d**（node2/4 独占） | 已完成（结论已被 E3-BO 修正：strip 是主因；根复合体差异只在 strip128 成立） | 前置：B 的 4420 target 已释放（仍在听就回报，不 kill）；B 的 5 盘无 mount/holders；B 的 target 脚本/config 可 `sudo -n` root 只读。**只跑决定性一步：Arm B = 同 target 配置（R60 打 210.5 那套）+ B 的 5 盘（21,22,28,29,91），2–3×30s；Arm A 不重跑，直接用 R60 的 210.5 作基线（同窗口疑虑大就加 1×30s 校验）。** 耗时：换盘/RAID0/起 target 5–8 min + 跑测 2 min + 还原 3 min ≈ **10–15 min**。**若 Arm B ~172 → 盘组定案 → 再加 Mooncake（NoF 注册 + 220k d keys + d 1/1 3×60s，+8–10 min，总计 20–25 min）；若 Arm B ~210 → 盘组不是原因，停并回报；Arm C（B exact target + B 盘）另派，不在本轮。** 重建 RAID0 会清空测试 namespace（用户已确认独占）。不改源码；不 kill 他人；异常保留。产物 R61 + 台账 §97 + INDEX + 五段式回执。**2026-11-10 回执：根因=盘挂在哪条 PCIe 根复合体。BAAB（同 target 配置只换盘）：A 我们 a1–a4,92 全 N2 → 211.25；B B 的 21,22,28,29,91（4×N0+1×N2）→ 169.58；A2 换回 → 212.50；A/A2 差 1.25 µs，B 快 42–43 µs。4 盘对照：21,22,28,29（root 20:xx/N0）198.3 µs/20.1 GiB/s（单盘 5.03）；a1–a4（root a0:xx/N2）259.8 µs/15.4 GiB/s（单盘 3.85）→ NUMA2 根复合体单盘慢 31%；10 块盘型号/固件/磨损/温度/通电时间逐项相同。5 块全 N0（21,22,28,29,2a）168.68 µs/23.1 GiB/s，比 B 组快 0.9、比旧组快 42.6（−20.1%），全是我们自己的盘。** 历史修订：R52“42–47 µs 属阵列带宽边界”方向对、命名改为“盘侧根复合体 NUMA”；R56“reactor 跨 NUMA 有害”作废（本实验 reactor NUMA 无影响，N0×4 用 NUMA2 reactor 反而更快）。**Mooncake d 未跑（blocked）：回执查的是 `mooncake_client`（node4 Oct26 strings 命中 0、node2 client_runtime 命中 0、node3 目录不存在），但第七次跑的是 `stress_cluster_bench`——E3-BF 11:23 预检还在 node4 见 md5 `b6caa5f0…`；“都不存在”证据不足，先按第七次脚本/日志里的绝对路径+md5 定向核查，确认后再重建。** 风险：按用户“独占、佛挡杀佛”授权 TERM 了 B 的 4420 target（pid 2054935，按 PID 精确 TERM、未 -9/未 pkill，`/tmp/nvmf_tgt.log` 1.1MB/974 dump 保留）；重建 RAID0 多次清空测试 namespace（已授权）；两次 r2 qpair 分配失败（切盘/重启 target 后启动瞬态）保留未剔除；2b 系统盘全程 nvme、root/home 写测试 OK；端口 4426/4436；node1/3 未登录。产物 R61 65 文件/0.10MB；台账 §97；INDEX R61。**建议：node2 性能盘组改用 21,22,28,29,2a（全 N0），弃用 a1–a4,92（全 N2）；91/92 只作容量/对照；《机器与使用说明》§4.4.1“同 NUMA 无惩罚”需改（待用户点头）。** **2026-11-11 E3-BO 修正：本任务所有臂都是 strip=128；strip 是主因。strip 64K 时方向反转（N0+64K Mooncake 237.9 vs N2+64K 209.8），R61 的“N2 根复合体慢 31%”只在 strip128 成立。盘组建议仍成立（128K 下 N0 21,22,28,29,2a 最快），但不能说“N2 永远慢”。** |
 | E3-BO | 2026-11-10 | **补 NUMA 原始证据；找回/重建 bench；新 N0 盘组跑 Mooncake d 1/1**（node2/4 独占） | 已完成（推翻 E3-BN：strip 64K→128K 是主因；42–47 µs 是口径错配） | ①**先补只读原始证据**（不许再用转述）：`lscpu -e` 看 CPU 156–161/12–17 的 NUMA；`ls -l /sys/class/uburma/udmac0d1e2/device` 得其 BDF，再 `cat /sys/bus/pci/devices/<BDF>/numa_node`；5 盘逐 BDF root port + `numa_node`；贴命令与原始输出。②按第七次脚本/日志的**绝对路径+md5**找 `stress_cluster_bench`（E3-BF 11:23 在 node4 见过 md5 `b6caa5f0…`）；找不到再重建（分支 `nof-urma-v2-bench-merge`、SPDK e12b7cb、CUDA 12.9、带 staging timing+gpu_mode），记录 md5。③target=21,22,28,29,2a 全 N0、**strip 64K 生产口径**起服务；bare urma_perf 2×30s 得 N0+64K 基线；同 target 注册 Mooncake NoF、预填 220k d keys、d 1/1 3×60s（warmup45/start0/sleep0，staging timing）；**必须给与 E3-BE 同口径拆解表：transfer(mean/P50)+submit+wait、copy(scatter)、read、query、total、恒等式闭合，不是只给 total**。④若 transfer→~169 则 42–47 µs gap 关闭；仍 ~211 则 Mooncake 层另有开销；**N0 下降不明显时，换回 a1–a4,92 同配置跑 N2 对照 3×60s（+10–15 min）**。可选再跑 strip 128 对照。不改源码（除重建）；不 kill 他人；异常保留。产物 R62 + 台账 §98 + INDEX + 五段式回执。**2026-11-11 回执：42–47 µs 的真正来源是 RAID0 strip 尺寸，不是盘组 NUMA。同一 N0 盘组/同 target/同客户端，strip 64K→128K：裸 227.3→168.7（−58.6）、Mooncake transfer 237.9→175.6（−62.3）；裸和 Mooncake 同步移动 ~60 µs → 在盘阵列侧，与 Mooncake 层无关。strip 64K 下盘组方向反转：N0+64K Mooncake 237.9 慢于 N2+64K 209.8（+28.1），R61 的“N2 根复合体慢 31%”只在 strip128 成立。E3-BE 208.8–213.5 被 N2+64K 208.2/210.1/211.2 复现（跨会话 ≤1.4）。所谓 42–47 gap 是拿 strip128 裸 168.7 减 strip64 Mooncake 208–213 的口径错配；同盘组同 strip 下 Mooncake 只比裸慢 6.9–10.6 µs（N0 两格；N2+64K 的裸值缺失）。建议 target strip 64K→128K：N0 组 d 1/1 total 620.3–623.8→560.7（−9.6%）、transfer −26.2%，不换盘组/不改代码；需产品侧确认生产口径。** 证据：d 拆解（N0+64K 3×60s transfer 237–239、N2+64K 208–211、N0+128K 175.6 仅 1 轮；submit 3.6–4.1、copy 339.7–340.7 不变，差异全在 wait；恒等式闭合）；裸 N0+64K avg 232.57/221.96（2×30s）；NUMA 原始证据 `lscpu` CPU156–161 全 NODE2、盘 21/22/28/29/2a/2b=N0、91/92/a1–a4=N2、root port 21/22/28/29→20:00/02/10/12、2a→20:14、91/92→90:04/06、a1–a4→a0:00/02/04/06；bench 找到 `~/nds/Mooncake/build/mooncake-store/benchmarks/stress_cluster_bench` md5 `b6caa5f0…`（335,277,696 B，Nov 9 11:12），未重建。更正：`udmac0d1e2` numa=0x01 是 node-id 语义（UB 虚拟设备 00007，无 PCI BDF），R60 的 NUMA2 是 RDMA 卡 `rocep166s0f0`=0000:a6:00.0；R61“bench 不存在”错误（只查了 mooncake_client）。未做：N0+128K 仅 1×60s、N2+128K 缺失、2×2 只有 3 格；strip 为何影响 qpair（entries 34→66）未拆到队列深度 vs 32K/64K 命令效率。⚠ iostat 行 287,012 请求 ÷ 18,377,408 ops = 64.0，不是 128.05，分母待核；不影响 strip 主结论。风险：①误把 node2 换盘脚本发到 node4 执行（09:27，node4 a1–a4,92 被 vfio 约 70s，已全部恢复 nvme、root/home 正常、dmesg 0 错误；后续加 hostname 校验）；②master NoF 段从 :4421 残留改为 :4426（清空后重注册；若别人依赖原段需重注册）；③按 PID 只杀我方 3 个 target，未用 pkill，同事进程未动；④裸基线用 B 的 urma_perf+lib（R60 已证非变量）。环境还原：node2+node4 12 盘全 nvme、nvmf_tgt=0、4420/4426/4436/4457 无监听、2b 系统盘 nvme、hugepages 227,253 free、node1/3 未登录。 |
 | E3-BP | 2026-11-11 | **补齐 strip/盘组缺失格（每臂 2 轮）**：N2+128K（裸+Mooncake）、N0+128K Mooncake、B组4N0+1N2+128K Mooncake；可选 N2+64K 裸 | 已取消（用户改为直接跑官方 d，2026-11-11） | 目标：回答“是否只有全 N0+128K 才能到 ~169/176”。**P0**：N2 组 a1–a4,92 + strip128，裸 2×30s + Mooncake 2×60s（补齐 2×2）；**P1**：N0 组 21,22,28,29,2a + strip128，Mooncake 2×60s（确认 175.6）；**P2**：B 组 21,22,28,29,91 + strip128，Mooncake 2×60s（4/5 N0 是否够）；**P3 可选**：N2+64K 裸 2×30s。口径同 E3-BO：220k d keys、warmup45、start0、sleep0、staging timing；**master 保持 node4（与 E3-BO 同），不要切 node2**；每臂给 transfer/submit/wait/copy/read/query/total + 恒等式；2 轮即可。每个盘组重建 RAID0 会清空 namespace，需重新 prefill 220k。不改源码；不 kill 他人；异常保留。产物 R63 + 台账 §99 + INDEX + 五段式回执。 |
-| E3-BQ | 2026-11-11 | **官方场景 d 1/1：N0 组 21,22,28,29,2a + strip128，master=node2、target 4457、标准口径** | 待执行 | 用户拍板：不补测，直接按 N0+strip128 跑原来的场景 d。①precheck（node2/4 独占、无他人进程、盘/端口）；②target N0 组 `21,22,28,29,2a`、RAID0 **strip128**、listener **4457**；③master=node2（50056/9006/8086），清旧 NoF 段（4426/4421）并注册新 target 4457；④预填 d 220k（若 N0+128K 的 keys 仍可读可复用，否则重灌，failed=0）；⑤node4 客户端 d 1/1 **3×60s**（220k、4MB、warmup45、start0、sleep0、`MC_BENCH_STAGING_TIMING`+`PATH_TIMING`）；⑥必须给拆解：transfer/submit/wait/copy/read/query/total + 恒等式 + iostat ops/req=64 + 5 盘分布；对照 E3-BE 208.8–213.5 与 E3-BO N0+128K 175.6（1轮）。**注意：master 从 node4 改回 node2 后 query 回到 ~108–138，total 预计 ~620–650，不是 E3-BO 的 560.7；transfer 预期 ~175–180。** 不改源码；不 kill 他人；异常保留。产物 R64 + 台账 §100 + INDEX + 五段式回执。 |
-| E3-BR | 2026-11-11 | **午休块：N0+128K 上 c/d 8 格（1/1、1/16、16/1、16/16）**，复用 E3-BQ 的 target/keys | 待执行 | 前置：E3-BQ 完成，target N0+128K/4457、master node2、220k keys 仍在；不重建 target、不重灌（除非 key 不在）。①c 1/1 3×60s（GDS；给 query/read/total + GDS 路径，无 copy 段）；②d/c 1/16 各 3×60s；③d/c 16/1 各 3×60s；④d/c 16/16 各 3×60s；全部 clean（sample=0），d 1/1 可另开 staging timing。每格记 avg/P50/P90/P99/P99.9/max、GiB/s、query/read、target iostat ops/req、5 盘分布。⑤若时间：a/b 1/1+16/16 各 3×60s 补齐 16 格（a/b 不受 strip/盘组影响，可复用 R51，非必须）；⑥可选 strip256 d 1/1 2×60s（需重建+prefill，最后做）。不改源码；不 kill 他人；异常保留。产物 R65 + 台账 §101 + INDEX + 五段式回执。 |
+| E3-BQ | 2026-11-11 | **官方场景 d 1/1：N0 组 21,22,28,29,2a + strip128，master=node2、target 4457、标准口径** | 已合并到 E3-BS（2026-11-11） | 用户拍板：不补测，直接按 N0+strip128 跑原来的场景 d。①precheck（node2/4 独占、无他人进程、盘/端口）；②target N0 组 `21,22,28,29,2a`、RAID0 **strip128**、listener **4457**；③master=node2（50056/9006/8086），清旧 NoF 段（4426/4421）并注册新 target 4457；④预填 d 220k（若 N0+128K 的 keys 仍可读可复用，否则重灌，failed=0）；⑤node4 客户端 d 1/1 **3×60s**（220k、4MB、warmup45、start0、sleep0、`MC_BENCH_STAGING_TIMING`+`PATH_TIMING`）；⑥必须给拆解：transfer/submit/wait/copy/read/query/total + 恒等式 + iostat ops/req=64 + 5 盘分布；对照 E3-BE 208.8–213.5 与 E3-BO N0+128K 175.6（1轮）。**注意：master 从 node4 改回 node2 后 query 回到 ~108–138，total 预计 ~620–650，不是 E3-BO 的 560.7；transfer 预期 ~175–180。** 不改源码；不 kill 他人；异常保留。产物 R64 + 台账 §100 + INDEX + 五段式回执。 |
+| E3-BR | 2026-11-11 | **午休块：N0+128K 上 c/d 8 格（1/1、1/16、16/1、16/16）**，复用 E3-BQ 的 target/keys | 已合并到 E3-BS（2026-11-11） | 前置：E3-BQ 完成，target N0+128K/4457、master node2、220k keys 仍在；不重建 target、不重灌（除非 key 不在）。①c 1/1 3×60s（GDS；给 query/read/total + GDS 路径，无 copy 段）；②d/c 1/16 各 3×60s；③d/c 16/1 各 3×60s；④d/c 16/16 各 3×60s；全部 clean（sample=0），d 1/1 可另开 staging timing。每格记 avg/P50/P90/P99/P99.9/max、GiB/s、query/read、target iostat ops/req、5 盘分布。⑤若时间：a/b 1/1+16/16 各 3×60s 补齐 16 格（a/b 不受 strip/盘组影响，可复用 R51，非必须）；⑥可选 strip256 d 1/1 2×60s（需重建+prefill，最后做）。不改源码；不 kill 他人；异常保留。产物 R65 + 台账 §101 + INDEX + 五段式回执。 |
+| E3-BS | 2026-11-11 | **N0+128K 全 16 格（a/b/c/d × 1/1、1/16、16/1、16/16）+ 1/1 拆解**（午休 2h 窗口） | 待执行 | 用户拍板：统一按 N0+strip128 规格，把 a/b/c/d 全矩阵跑一遍，1/1 打点拆解。前置：node2/4 独占；target N0 组 `21,22,28,29,2a`、strip128、listener 4457；master=node2（50056/9006/8086），清旧 NoF 4426/4421 并注册 4457。①a/b memory 32GiB、3000 keys；c/d NoF 220k keys；预填 failed=0；②按第六次矩阵脚本，a/b/c/d × 4 并发 × **3×60s**（1/1 sleep0，其余 sleep50；4MB、warmup45、start0；clean sample=0）；③**1/1 四格都带拆解**：d staging transfer/submit/wait/copy/read/query/total；b staging（如有 copy）；c GDS query/read/total+GDS 路径；a GDR query/read/total；恒等式；④每格 avg/P50/P90/P99/P99.9/max、GiB/s、iostat ops/req、5 盘分布；⑤对照 R51（旧 N2+64K）与 E3-BE/E3-BO；⑥若时间不足，按 a/b/c/d 1/1 → 1/16 → 16/1 → 16/16 顺序，**先保 1/1**。不改源码；不 kill 他人；异常保留。产物 R66 + 台账 §102 + INDEX + 五段式回执。 |
 
 ---
 
@@ -4893,3 +4894,54 @@ readlink -f /sys/bus/pci/devices/0000:21:00.0 | sed 's#/0000:.*##'     # root po
 - 异常轮保留证据；不静默剔除；环境变更/回退记清。
 - 产物：`测试相关资料/第七次测试结果/R65_20261111_cd_matrix_n0_128k/`；台账 §101；INDEX R65；五段式回执。
 - 预计：c/d 8 格 24 runs×60s=24 min + 切换/记录 ~10 min = **35–45 min**；加 a/b 4 格 ~15 min；加 strip256 ~15–20 min。与 E3-BQ 合计约 **50–80 min**，留 40 min 余量。
+
+---
+
+# E3-BS（待执行 · 2026-11-11）· N0+128K 全 16 格（a/b/c/d × 4 并发）+ 1/1 拆解
+
+> 用户拍板：**统一按 N0 + strip128 规格**，把 a/b/c/d 的 1/1、1/16、16/1、16/16 全跑一遍；**1/1 四格都要打点拆解**。
+> 这是新规格下的“全量表”，用来替换 R51（旧 N2+64K）里的 c/d 数据；a/b 是内存源、不受 strip/盘组影响，但同窗口重跑以便整表一致。
+> **2 小时窗口可行**：48 runs×60s = 48 min 跑测 + 15–20 min 搭环境/预填 + 10 min 切换/记录 ≈ 70–80 min，留 40 min 余量。
+
+## 一、环境
+
+- node2/node4 独占；target = N0 组 `21,22,28,29,2a`、RAID0 **strip128**、listener **4457**；master=node2（50056/9006/8086）。
+- 清旧 NoF 段（E3-BO 的 4426、历史 4421），注册新 target 4457；`nof_segments`=1。
+- a/b：memory segment 32GiB、**3000 keys**（回绕，与第六次一致）；c/d：NoF **220k keys**（不回绕）。
+- 预填：a/b 3000、c/d 220k，failed=0；若 c/d 的 220k keys 仍可读（同盘序/同 strip128）可复用，否则重灌并记录时长。
+- 记录 target/master/NoF、逐 BDF 盘 NUMA、bench md5（应为 `b6caa5f0…`）。
+
+## 二、矩阵（3×60s/格；1/1 sleep0，其余 sleep50）
+
+**执行顺序（先保 1/1）**：
+
+1. a 1/1（GDR；拆解 query/read/total）
+2. b 1/1（staging；拆解 transfer/copy/read/query/total，若有 copy）
+3. c 1/1（GDS；拆解 query/read/total + GDS 路径）
+4. d 1/1（staging；拆解 transfer/submit/wait/copy/read/query/total）
+5. a/b/c/d 1/16
+6. a/b/c/d 16/1
+7. a/b/c/d 16/16
+
+- 全部 4MB、warmup45、start0、clean sample=0；1/1 四格开 staging/路径 timing，其余格 clean。
+- 每格记录：avg/P50/P90/P99/P99.9/max、GiB/s、query/read、target iostat ops/req、5 盘分布、failed 数。
+- 1/1 拆解必须给恒等式（alloc+prep+get+scatter+free−sp_total≈0；read−get−scatter≈残差）；c/a 没有 copy 段就写“无”，不要硬套。
+- 如果某场景起不来（GDS/GDR/memory），记录报错并继续其它场景；不要因一个场景阻塞全表。
+
+## 三、对照与判定
+
+- 对照 **R51（第六次，旧 N2+64K）**：a/b 基本不变（内存源）；c/d 应随 N0+128K 下降，重点看 c/d 1/1 与 16/16。
+- 对照 **E3-BE/E3-BO**：d 1/1 transfer 是否 ~175–180；copy 是否仍 ~340；query 是否回到 ~108–138（master node2）。
+- 只回答：新规格下 16 格的绝对值、与 R51 的差、c/d 的收益是否在 4 个并发格都成立；不要混用旧口径。
+
+## 四、时间 / 风险
+
+- 48 runs×60s=48 min；环境/预填 15–20 min；切换/记录 10 min；总计 **70–80 min**。
+- 若 prefill 仍要 7–8 min、或某场景失败，优先保证 **1/1 四格** 完成；并发格可减到 2×60s 并在回执标注。
+- 不改源码、不改交付表；不 kill 他人；node1/3 不动；异常轮保留证据。
+
+## 五、产物
+
+- `测试相关资料/第七次测试结果/R66_20261111_full16_n0_128k/`；本地 `D:\gds性能\第七次测试\`。
+- 台账 §102；INDEX R66；五段式回执。
+- 必须给：16 格全表、1/1 四格拆解、与 R51 的对照、target/master/NoF 状态、prefill 时长/是否复用、环境回退。
