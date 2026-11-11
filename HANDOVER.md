@@ -181,7 +181,7 @@
 | E3-BR | 2026-11-11 | **午休块：N0+128K 上 c/d 8 格（1/1、1/16、16/1、16/16）**，复用 E3-BQ 的 target/keys | 已合并到 E3-BS（2026-11-11） | 前置：E3-BQ 完成，target N0+128K/4457、master node2、220k keys 仍在；不重建 target、不重灌（除非 key 不在）。①c 1/1 3×60s（GDS；给 query/read/total + GDS 路径，无 copy 段）；②d/c 1/16 各 3×60s；③d/c 16/1 各 3×60s；④d/c 16/16 各 3×60s；全部 clean（sample=0），d 1/1 可另开 staging timing。每格记 avg/P50/P90/P99/P99.9/max、GiB/s、query/read、target iostat ops/req、5 盘分布。⑤若时间：a/b 1/1+16/16 各 3×60s 补齐 16 格（a/b 不受 strip/盘组影响，可复用 R51，非必须）；⑥可选 strip256 d 1/1 2×60s（需重建+prefill，最后做）。不改源码；不 kill 他人；异常保留。产物 R65 + 台账 §101 + INDEX + 五段式回执。 |
 | E3-BS | 2026-11-11 | **N0+128K 全 16 格（a/b/c/d × 1/1、1/16、16/1、16/16）+ 1/1 拆解**（午休 2h 窗口） | 已完成（回执已收；16 格 + xlsx + md） | 用户拍板：统一按 N0+strip128 规格，把 a/b/c/d 全矩阵跑一遍，1/1 打点拆解。前置：node2/4 独占；target N0 组 `21,22,28,29,2a`、strip128、listener 4457；master=node2（50056/9006/8086），清旧 NoF 4426/4421 并注册 4457。①a/b memory 32GiB、3000 keys；c/d NoF 220k keys；预填 failed=0；②按第六次矩阵脚本，a/b/c/d × 4 并发 × **3×60s**（1/1 sleep0，其余 sleep50；4MB、warmup45、start0；clean sample=0）；③**1/1 四格都带拆解**：d staging transfer/submit/wait/copy/read/query/total；b staging（如有 copy）；c GDS query/read/total+GDS 路径；a GDR query/read/total；恒等式；④每格 avg/P50/P90/P99/P99.9/max、GiB/s、iostat ops/req、5 盘分布；⑤对照 R51（旧 N2+64K）与 E3-BE/E3-BO；⑥若时间不足，按 a/b/c/d 1/1 → 1/16 → 16/1 → 16/16 顺序，**先保 1/1**。不改源码；不 kill 他人；异常保留。产物 R66 + 台账 §102 + INDEX + 五段式回执；**结果必须填入 `C:\Users\l00955908\Desktop\mooncake主仓\nds\测试相关资料\第七次测试结果\benchmark_Mooncake_第七次测试.xlsx`（先备份、只改 4MB 目标格、3 轮均值、记录前后 md5），并写 `...\第七次测试结果\第七次测试_结果_20261111.md`（16 格全表 + 1/1 拆解 + 对照 + 异常）。** **2026-11-11 回执：16 格 48 轮 failed=0；d 1/1 = 630.29 µs / 6.16 GiB/s（R51 657.45/5.95，−3.47%），transfer 176.62、wait 168.26、copy 339.81 不变；与 E3-BQ 178.5/631.9 差 1.9/1.6 µs，独立互证。a/b 16/1、16/16 与 R51 逐位相同；c/d 收益只在 1/1（d −3.47%）与 1/16（c −2.20%、d −2.01%），16/1/16/16 ≤0.3%。a/b/c 1/1 略差（a +1.38%、b +4.16%、c +2.46%），b +22.1 µs 未定因（疑 memory 段 90% 占用/key 落点；16/16 逐位相同 ⇒ 非环境漂移）。16/16 四场景 keys/s≈3248、GiB/s≈12.69 → 客户端/UB 上限。prefill：a/b 3000/13s、c/d 220k/464s 全重灌。xlsx Sheet1 K3:U18 已填（16×11，Value2），备份 `bak_20261111_1300`，md5 `55447659…`→`d1ad286a…`，新会话回读 16 行通过；md 已写。**口径 sheet 仍写 R51/40 样本，与 R66/48 不一致，待用户点头更新。** 风险：未 kill 他人；只 PID 停我方 target；环境还原（nvmf_tgt=0、4457 无监听、5 盘回 nvme、hugepages 227,253 free、dmesg 0 错误、node1/3 未登录）。HANDOVER 状态由指挥侧手动更新。** |
 | E3-BT | 2026-11-11 | **清空 memory 段后复测 a/b 1/1**：验证 b +4.16% 是否来自 memory 段占用/key 落点 | 已完成（回执已收；b +22 µs 随 memory 段清空消失） | 前置：node2/4 独占；只停我方 memory segment（pid 226145，141.61.84.247:13567，32GiB），重启同配置；**不 kill master/他人**。①记录 before：`master_mem_allocated`、segment 占用、`master_key_count`；②清空/重建 memory 段；③prefill a/b **3000 keys**（failed=0），记录占用；④node4 跑 **a 1/1、b 1/1 各 2×60s**（同 E3-BS 口径：4MB、warmup45、start0、sleep0、clean；a GDR、b staging）；⑤对照 E3-BS a 427.66/b 553.94 与 R51 a 421.8/b 531.8；记录 query/read/total、failed、key NUMA（如可得）；⑥**先不改 xlsx/md**，只出诊断；若确认需更新再另派。异常保留；环境还原。产物 R67 + 台账 §103 + INDEX + 五段式回执。**2026-11-11 回执：命中第 1 档——b 1/1 +22.1 µs 随 memory 段清空/重建整体消失。清空前 allocated 30,903,631,872 / 34,359,738,368 = 89.94%（7,368 keys），重建后 prefill 3000 keys = 12,582,912,000 / 34,359,738,368 = 36.62%。a 1/1 413.64（R51 421.83，−1.94%；E3-BS 427.66，−3.28%）、b 1/1 529.84（R51 531.80，−0.37%；E3-BS 553.94，−4.35%）；a 也同步变快 → 整段级效应，不是 b 专属；b−a gap 116.20 vs R51 109.97（+6.23）、E3-BS 126.28（−10.08），剩余 6 µs 标未定因。a/b 各 2×60s、4 轮全 failed=0、clean；a r1/r2 差 11.7 µs（2.8%），单轮噪声不小；node4 load 7.6→13.99，绝对值 ±2% 当噪声带。** 未做 timing 拆解；只 a/b 1/1 2 轮；无 NUMA/地址采样。风险：段端点端口动态分配 13567→13482（MEMSEG 作参数传入）；`master_active_clients` 不可靠；他人 master 3496916 14:33 alive/14:47 GONE，本轮未发信号；日志改 `/tmp/bt_client_50156.log`；HANDOVER 需手动更新；`C:\Users\l00955908\Desktop\r67_stage` 596 KB 需用户删。产物 R67 24 文件/596KB；台账 §103；INDEX R67。** |
-| E3-BU | 2026-11-11 | **fresh memory 段确认 a/b 1/1 3×60s，并更新 xlsx a/b 1/1 两格 + 口径 sheet** | 待执行 | 前置：E3-BT 的 fresh memory 段（3000 keys/36.62%）仍在；若状态变了，按 E3-BT 方式清空/重建+prefill 3000。①a 1/1、b 1/1 各 **3×60s**（4MB、warmup45、start0、sleep0、clean；a GDR、b staging）；②若 3 轮均值与 E3-BT（a 413.64/b 529.84）在 ±2% 内，更新 `benchmark_Mooncake_第七次测试.xlsx` Sheet1 的 **a 1/1、b 1/1 两格**（按 E3-BS 布局；先备份、记录前后 md5、只改这两格、回读校验）；③同时把 **口径 sheet** 从 R51/40 更新为 **R66/48（每格 3 轮）**，注明 a/b 1/1 为 fresh 段 3×60s、E3-BS 的 a/b 1/1 是 90% 满段污染值已替换；④结果 md 增补 a/b 1/1 新值与 memory 段说明；⑤若 3 轮超出 ±2%，停并回报，不覆盖。不改源码；不 kill 他人；异常保留。产物 R68 + 台账 §104 + INDEX + 五段式回执。 |
+| E3-BU | 2026-11-11 | **fresh memory 段确认 a/b 1/1 3×60s，并更新 xlsx a/b 1/1 两格 + 口径 sheet** | 已完成（判据未通过；xlsx 未改；待选 A/B/C） | 前置：E3-BT 的 fresh memory 段（3000 keys/36.62%）仍在；若状态变了，按 E3-BT 方式清空/重建+prefill 3000。①a 1/1、b 1/1 各 **3×60s**（4MB、warmup45、start0、sleep0、clean；a GDR、b staging）；②若 3 轮均值与 E3-BT（a 413.64/b 529.84）在 ±2% 内，更新 `benchmark_Mooncake_第七次测试.xlsx` Sheet1 的 **a 1/1、b 1/1 两格**（按 E3-BS 布局；先备份、记录前后 md5、只改这两格、回读校验）；③同时把 **口径 sheet** 从 R51/40 更新为 **R66/48（每格 3 轮）**，注明 a/b 1/1 为 fresh 段 3×60s、E3-BS 的 a/b 1/1 是 90% 满段污染值已替换；④结果 md 增补 a/b 1/1 新值与 memory 段说明；⑤若 3 轮超出 ±2%，停并回报，不覆盖。不改源码；不 kill 他人；异常保留。产物 R68 + 台账 §104 + INDEX + 五段式回执。**2026-11-11 回执：判据未通过（a 3 轮均值 424.84 vs E3-BT 413.64，+2.71% > ±2%；b 531.60，+0.33% 通过），按规格停手，xlsx 未改（md5 `d1ad286a…` 前后一致，仍 427.66/553.94 污染值；口径 sheet 仍 R51/40）。但方向要解释：a 424.84 相对 R51 421.83 +0.71%、相对 E3-BS 427.66 −0.66%；b 531.60 相对 R51 531.80 −0.04%；b−a gap 106.76（R51 109.97、E3-BS 126.28、E3-BT 116.20）→ 满段导致的 gap 扩张两次消失。±2% 的基准 E3-BT a=413.64 只有 2 轮、r2=407.77 是低尾，更像基准偏低而非本轮偏高。6 轮 clean（a/b 交错 3 轮）failed=0；a 极差 14.66（3.45%，node4 load 13.1–14.2，GDR 敏感）、b 极差 1.70（0.32%）。fresh 段 allocated 36.62%、key 271,000、段 :13482。风险：交付表仍是污染值；node4 更忙；master_active_clients=2；无 query 拆解；dmesg 86 行是 `Shutdown timeout set to 8 seconds`，真错误 0；旁证 evictions 209,357/115/935 keys（3.9GB）但 6 轮 key/allocated 不动。产物 R68 23 文件/101KB；台账 §104；INDEX R68。** 待选：A 采用 424.84/531.60 + 口径 R66/48；B 等 load<8 补测；C 只换 b（不建议）。 |
 
 ---
 
@@ -5176,3 +5176,44 @@ readlink -f /sys/bus/pci/devices/0000:21:00.0 | sed 's#/0000:.*##'     # root po
 - 产物：`测试相关资料/第七次测试结果/R68_20261111_ab_confirm/`；台账 §104；INDEX R68；五段式回执。
 - 必须给：before/after md5、备份名、a/b 3 轮原始值+均值、口径 sheet 改动文本、回读校验结果。
 - 预计：若 fresh 段可用，a/b 3×60s=6 min + xlsx/md ~5 min ≈ **10–15 min**；若需清空/重建 +5 min。
+
+## 回执（2026-11-11，E3-BU，已收）
+
+**结论：判据未通过（a 424.84 vs E3-BT 413.64，+2.71% > ±2%；b 531.60，+0.33% 通过），按规格停手，xlsx 未改。**
+
+| 格 | E3-BT | E3-BU 3 轮均值 | 偏差 | 判据 |
+| --- | --- | --- | --- | --- |
+| a 1/1 | 413.64 | **424.84** | +11.20 µs / +2.71% | ❌ |
+| b 1/1 | 529.84 | **531.60** | +1.76 µs / +0.33% | ✅ |
+
+- **方向解释**：a 424.84 相对 R51 421.83 只差 +0.71%、相对 E3-BS 427.66 为 −0.66%；b 531.60 相对 R51 531.80 只差 −0.04%。3 轮把 a/b 双双拉回 R51；±2% 的基准 E3-BT a=413.64 只有 2 轮，r2=407.77 是低尾，更像基准偏低，不是本轮偏高。
+- b−a gap：R51 109.97 → E3-BS 126.28 → E3-BT 116.20 → **本轮 106.76**；满段导致的 gap 扩张两次独立测量都消失。
+- 6 轮（a/b 交错 3 轮，clean：sample=0、sleep=0、warmup45、4MB）failed 全 0；a 极差 14.66（3.45%），b 极差 1.70（0.32%）。
+- fresh 段：pid 3843357、50156、段 :13482、allocated 12,582,912,000 / 34,359,738,368 = 36.62%、key_count 271,000。
+
+### xlsx 状态（未改动）
+
+| 项 | 值 |
+| --- | --- |
+| 改前 md5 | `d1ad286a7088ad4475146db47e74648d`（17,298 B） |
+| 改后 md5 | 同值（未写） |
+| 备份 | 未创建（无改动） |
+| 口径 sheet | 未改，仍 R51/40 样本 |
+| Sheet1 a/b 1/1 | 仍是 E3-BS 的 427.66 / 553.94（满段污染值） |
+| 交付 md | 未改 |
+
+### 未做 / 风险
+
+- 交付表仍是污染值；a/b 1/1 未替换、口径 sheet 仍 R51/40——按判据停手的直接后果，待决策。
+- node4 本窗口 loadavg 13.1–14.2（E3-BT 为 7.6→14.0）；a 走 GDR/peermem 对共用机负载敏感（极差 3.45%），b 走 staging 仅 0.32%。
+- `master_active_clients` 仍为 2（旧 client 条目未回收）；段在线用 `list_segments` + 50156 监听判定；段端点 :13482（非规格文字 13567）。
+- 无 query 拆解（clean 口径无 timing）；未跑 16/1、16/16、c/d、8 MB。
+- dmesg 别误判：`grep -ciE 'nvme.*timeout'` 得 86 行，全是 `Shutdown timeout set to 8 seconds`；真错误（I/O error|blk_update_request|critical medium error）= 0。
+- 旁证：attempted_evictions 209,357 / successful 115 / evicted 935 keys（3.9 GB），36.6% 占用下仍有驱逐尝试，但 6 轮 key/allocated 完全不动。
+- 产物 R68 23 文件 / 101 KB；台账 §104；INDEX R68。
+
+### 待选（A/B/C）
+
+- **A（推荐）**：采用候选值写两格（a 424.84 / b 531.60，其余列按中位数），口径 sheet 改为 R66/48 + 注明 a/b 1/1 为 fresh 段 3×60s。
+- **B**：等 node4 loadavg < 8 再补测 a/b 各 3×60s，重跑 ±2% 判据。
+- **C**：只换 b、a 保留 427.66（数值不自洽，不建议）。
