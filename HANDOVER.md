@@ -191,6 +191,7 @@
 | E3-CB | 2026-11-12 | **切 netlab 内核 + 加载现成 GDR 模块：node3 先、node1 后**（用户已确认可重启 node1；node1/3 独占） | 已完成（回执已收；内核+bridge 成功，b/NoF-host 通，a/c/d 仍 blocked） | 前置：核实 node1/node3 无他人进程/端口（独占但仍先查）；记录当前内核、grub 默认/索引、/boot、udma srcversion、target/master PID、vfio 盘、hugepages。**A. node3（先）**：一次性启动 netlab（保留基座默认）→ `uname -r` 必须 netlab → 按依赖加载 netlab 模块树 + 全量 `udma.ko`（**不加载 bridge**，无 GPU）→ `lsmod` 看 udma 270336、srcversion F3D2…（非 stub 673E…）→ 重启 target/master/client → b 1/1 + NoF-host 10s 冒烟 failed=0。**B. node1（后，A 成功才做）**：一次性启动 netlab → `uname -r` 确认 → `modprobe nvidia`（若未自动，nvidia-smi 必须正常）→ 加载全量 udma + bridge（按依赖）→ `lsmod` 看 udma 270336 + udma_nv_p2p_bridge → `/dev/uburma` → 重启 target/master/client → b/NoF-host 回归 → a/c/d 1/1 100-key 10s 冒烟 failed=0。**回退**：基座内核保持默认；netlab 失败就重启回基座；模块加载失败就 rmmod/重启；记录全部命令/PID/端口/模块/md5。不改源码/不改 target/strip；node2/4 不碰；异常保留。产物 R75 + 台账 §111 + INDEX + 五段式回执。**2026-11-12 回执：两节点均切到 6.6.0-netlab_pcie_ub_compat+（一次性启动、默认仍基座）；全量 udma 270336/srcversion F3D2CA85B0F488DE71E3062（原 stub 262144/673E…）；node1 bridge 18C54A1F… 已加载、dmesg `UDMA: GPU P2P ops registered by udma_nv_p2p_bridge`；nvidia 575.64.05 自动加载+peermem；/dev/uburma 7。b 1/1 10s 26,528 q/10.35 GiB/s/avg 377.45（E3-BD 26,428/10.32/378.45，≤0.8%）；NoF-host 21,309 q/8.32 GiB/s。a/c 仍 `Failed to register segment … Unknown error 2048 → register_buffer failed ret=-600`；d `cuMemGetHandleForAddressRange rc=801 → peermem → -2048`。**所有 GPU 缓冲路径都倒在 URMA GPU 段注册，所有 host 缓冲路径全通** → 缺口收敛到一条路径，不是 NoF/内存差异；按规格停手。途中阻断：netlab 下 PCIe NVMe 无 IOMMU 组（IORT don't map）→ vfio probe -22，用 `vfio enable_unsafe_noiommu_mode=Y` 绑定 5 盘（内核 taint、无 DMA 隔离，正式跑分前需评估/开 SMMU）。前置发现两节点非独占（node1 他人 HA master 773%/client 228%/容器/25 会话；node3 nvmf 598%/client 253%/14 会话）→ 授权后按 PID 精确 kill、未用 pkill；`kill -0` 对 root EPERM 误判已改用 `sudo -n kill -0`；node1 重启把他人 vfio 2b,91,92,a1,a2 释放回 nvme、未恢复。node3 target e7440ae0:4457/Raid0 strip64 num_blocks 75,014,659,200；master 50056/9006/8086；client 50156；hugepages 7168。段端点易错：client TE RPC :15793 vs master 登记段端点 141.61.84.149:13550。未做 16/1/16/16/8MB/strip。回退：基座仍是 grub 默认，reboot 即回。产物 R75 37 文件/395KB；台账 §111；INDEX R75。** |
 | E3-CD | 2026-11-12 | **定位 a/c/d 的 2048：GPU 段注册路径（只换运行时库 + 抓 dmesg）** | 已关闭（回执已收；4090D 无 P2P 硬阻塞，a/c 物理不可达；d 可救） | ①只读指纹：node1/node4 bench ldd 的 liburma 解析+md5、RPATH、找 netlab lib（36b0ab10）；②a 1/1 100-key 10s 冒烟抓 dmesg 前后 + `is_gpu_seg=` 日志行；③进程级 LD_LIBRARY_PATH netlab lib A/B。不编译/装驱动/rmmod/重启/改 grub；node2/4 只读。产物 R77 + 台账 §113 + INDEX + 五段式回执。**2026-11-12 回执：2048 两层叠加。①运行时库：node1 RPATH 指的 UMDK_netlab/lib 目录不存在 → ldd 落 /usr/lib64 老版（5c021f7f，is_gpu_seg 0）→ 普通 pin_user_pages_fast（-14/-12）。②GPU P2P：换 netlab 库（36b0ab10，is_gpu_seg=1，日志行证明二进制 OK）后正确进 bridge P2P，但 nvidia_p2p_get_pages 返回 -22 EINVAL；ABAB 四轮复现；nvidia-smi Peer Type N/A、topo GPU↔NIC 全 SYS。判定命中§三第 2 行：4090D GeForce 无 PCIe P2P，a/c 直写物理不可达（对照 node4 V100 可用）。已停手，未改内核/编译/kill；node4 只读；服务保持 E3-CB 终态。** **指挥侧源码复核：d 与 a/c 不同——staging 数据面 NIC 不碰 GPU，物理不需 P2P；被挡是 bench EnsureNofPools（stress_cluster_bench.cpp:1971/1993/2021）在 staging 下仍把 GPU 整池注册到 NoF（→-2048→return false），该注册只对 GDS 必要。host 暂存池由 real_client:4227/5967 独立注册（E3-N，不受 bench flag 影响）；UB staging 走 registerLogicalDeviceRegion（ub_transport.cpp:502，逻辑注册）→ b 能通的原因。零代码改动解法：d 跑 --nof_whole_pool_register=false（或 MC_NOF_WHOLE_POOL_REGISTER=0）跳过 GPU 注册；启动闸门 NofGpuLayoutSupported(4MB,128KB,32MB,false) 全 64KiB 对齐通过。待 E3-CE 冒烟实证（已派）。** |
 | E3-CE | 2026-11-12 | **node1/3：d staging 冒烟（`--nof_whole_pool_register=false` 跳过 GPU 整池注册）** | 已完成（回执已收；d 零代码改动打通） | 承接 E3-CD：a/c 物理不可达不碰；d 是 staging 不需 P2P，被 bench EnsureNofPools 多余 GPU 注册挡住，零代码改动可解。主臂 A：沿用 R75 d 1/1 100-key 冒烟命令+env，唯一加 `--nof_whole_pool_register=false`，开 timing，2×10s；判据 failed=0 + cuda_io=0 + host_io>0 + effective_path=nof/staging + 恒等式闭合。对照臂 B：同 A + 进程级 LD_LIBRARY_PATH=/home/yin/gdr/UMDK_netlab/lib（sudo 下 ldd 复核），1×10s，证库无关。A/B 都不通就抓日志+dmesg 停并回报，不猜/不改源码。不改源码/编译/装驱动/rmmod/重启/grub//usr/lib64/全局 symlink；不 kill 他人；node2/4 不碰；不修 lib 路径/不跑 a/c/16 并发/8MB/全量；进程级 flag/env 无持久改动。产物 `第二组测试环境/E3-CE_d_staging_flag_20261112/`、本地 `node1&3测试\`、台账§114、INDEX R78、五段式回执；10–15 min。**2026-11-12 回执：d 零代码改动打通。A（flag=false 老库）2×10s + B（flag=false netlab 库）1×10s，3 轮 failed=0、6.33–6.35 GiB/s。计数器 cuda_io=0/host_io>0/accelerator=0/dmabuf=0/peer_memory=0/gds 0 次 → 确凿 host staging；恒等式 −1.00/−1.01/−1.10 闭合。effective_path=nof/urma/cuda-domain 与 nof/staging 等价（指挥侧核实 stress_cluster_bench.cpp:2759-2762：NoF+use_gpu_buffer 一律打此粗标签，不分 staging/GDS；规格预期名写错，路径以计数器为准）。数据：get 334.5/335.8/338.8、scatter 174、copy_us 170.6/171.0（4090D PCIe4.0≈V100 336 一半）、total 509.7/511.3/514.4、Avg 617/614.7（含 query~107）、P50 483/491。A≈B（差≤1.2µs）→ 与库无关。get 335 高于 node2 176 因 node3 strip64+2N0+3N2；若改 strip128+全N0 d 有望 ~460µs（后续）。风险：首跑脚本 bug（sudo $HOME=/root）改绝对路径修复；yin cmake -j308 偶占 1 核（单核 9%/全机 0.03%）按阈值不停手、绑 N0、未 kill；段端点 :13550。零变更自检通过，仅进程级 flag/env 无需回退。未跑 a/c/16 并发/8MB/全量、未做永久 lib 改动。** |
+| E3-CF | 2026-11-12 | **node1/3：按自维护仓库重编 GDR 内核（bonding 兼容）+ UMDK + GeForce hook，验证 peermem GDR 连通** | 待执行 | 用户首要目标=四场景；指令：不用 netlab（缺 bonding 影响他人），按 `GDR编译部署_自维护仓库_20261111.md` 重编（HaoyuWang2001/kernel openEuler-24.03-LTS-SP4-gdr + umdk gdr）。纠正 E3-CD"物理不可达"：同事 `内核&测试.txt` 的 libgdr_geforce_hook.so（NV50_THIRD_PARTY_P2P）+BAR 扩容（resource1_resize=15）能在 4090D 注册 P2P（REGISTER_VIDMEM status=0），但那次是 -M posix，"Peermem直接崩"未确认。分阶段 gate：①前置/回退基线（默认内核=原厂基座）②取料（gitcode 走代理+同事 hook sudo 只读拷）③编内核本体（openeuler_defconfig+LOCALVERSION -gdr_e3cf+NV_P2P_HEADER_PATH=，查 ummu_sva_matt_map_phys_sg）④编 urma ko（NV_P2P_ROOT=575.57.08）+UMDK（BUILD_URMA=enable）+collector，部署 node1+node3⑤一次性重启进自编译内核+reload_urma.sh+nvidia-smi+udma 270336+bridge⑥BAR 扩容+hook⑦**核心 gate：urma_perftest write_lat_gpu --gpu-mode=peermem（udmac0d1e2+bonding_dev_0，node1↔node3）errors=0**⑧bonding ACTIVE 验证+SPDK -M peermem 诊断（txt 崩的那个）。默认内核保持基座（回退）；不 kill 他人；node2/4 不碰；装 nvidia 驱动先回报；本轮不跑 Mooncake a/c 全量（peermem 通后另派 E3-CG）。产物 `第二组测试环境/E3-CF_gdr_kernel_rebuild_20261112/`、本地 `node1&3测试\`、台账§116、INDEX R79、五段式回执；1.5–2h 分窗口。 |
 | E3-CC | 2026-11-12 | **node2/4：d 1/1 补测 4MB 随机读 + 8MB 顺序/随机读**（`--shuffle_seed`） | 已完成（回执已收；随机代价全在 NoF get_us、copy 不变；verify 旧限制已知） | 前置：node2/4 独占（他人进程 10 s Δ=0；load 7.7–7.9 / 13.0–15.4）；target = N0 组 21,22,28,29,2a + strip128 + 4457（脚本 md5 2556998a，与 E3-BS 同）；master=node2；220k 4MB keys 重灌 466 s（旧 keys 因 strip128 重排不可复用）；8MB 另灌 110k keys（同 880GB 工作集，`_vs` 隔离）。**结果（d 1/1，3 轮/臂）**：4MB 顺序 612.57 µs / 6.375 GiB/s，随机 777.58 / 5.023（avg +26.9%、P50 +34.7%）；8MB 顺序 1072.31 / 7.287，随机 1398.57 / 5.587（avg +30.4%、P50 +27.3%）。**代价全部在 get_us：4MB 169.5→382（+212.5）、8MB 289→589（+300）；copy 339.5→340、667→667 不变。** 每 MB 成本：4MB 153.1→194.4 µs/MB；8MB 134.0→174.8（8MB 比 4MB 便宜 ~12%）。4MB 顺序 612.57 vs E3-BS 630.29 = −2.8%（同窗口）；11 臂 failed=0、组内离散 ≤1.7%/≤1.1%、无回绕（4MB 76.8k–98.9k≪220k；8MB 42.8k–56.3k≪110k）；iostat 自洽（bytes/op=131,072、5 盘均分、67.4 ops/query vs 理论 64）。**verify：`--verify=true` 在本 build 的 NoF 路径恒失败（HANDOVER:2143 早已记录，非新问题）**——NoF 写后同进程校验 8/8 errors、内存段 0/8；NoF 只读 3098/3098 failed；重灌 220k 后仍 88,368 条 `Segment verification failed`（从 key_0 起）→ 正式臂全 `--verify=false`，**内容一致性仍未验证**；规格里的 verify 复用闸门是写错了，测试侧改用 failed=0 + status[ok] 是对的。事故：8MB 首轮预填中断 99,730/110,000（原因未定位）→ 随机 R1 抽到缺失 key failed=4,401(9.4%)，补齐后重跑、该轮作废；一次 NoF 整池注册失败（refusing unsafe per-I/O fallback）→ 3/3 重试通过；12:23 双驱动实例误跑（8mb_R1 failed=4,398）→ 按 PID 全停、单实例重跑、作废轮留证；两次 PowerShell `$S/$R` 展开事故（垃圾目录已删）。**越界**：规格写“不改交付表”，测试侧新建 3 张表（4MB 随机 CC1B0054… / 8MB 顺序 FBE3ACC5… / 8MB 随机 ABE34633…）各填 R15 + 口径页重写 + 备份；原第七次表未动（12DF45B6…）。**缺口**：回执未给 bench md5/lib 解析路径与 P99/P99.9/Pmax 绝对值；verify 原始报错行未贴。环境终态：target TERM、4457/4426/4421 无监听、5 盘回 nvme、master 224956/client 3843357 未动、hugepages 227,253 free、NoF 段 1 条@4457 仍在 master 元数据、master_key_count=333,000；node1/3 未登录。产物 R76 65 文件/73.5MB；台账 §115；INDEX R76。** |
 
 ---
@@ -5643,6 +5644,100 @@ lsmod | grep -E 'nvidia|gdrdrv' 2>&1
 
 - 回退：基座仍是 grub 默认，reboot 即回；模块可 rmmod/重启；target/master/client 按 PID 停。
 - 产物 `第二组测试环境/E3-CB_netlab_switch_20261112/`：37 文件 / 395 KB（node1_raw.txt、node3_raw.txt、smoke/、scripts/、package.md5）；台账 §111；INDEX R75。
+
+---
+
+# E3-CF（待执行 · 2026-11-12）· node1/3：按自维护仓库重编 GDR 内核（bonding 兼容）+ UMDK + GeForce hook，验证 peermem GDR 连通
+
+> **用户首要目标 = 第二组跑通 a/b/c/d 四场景。** b/d 已通（E3-CE，d 需 `--nof_whole_pool_register=false`）；a/c 需要 GPU 直写（GDR/GDS）。
+> **纠正 E3-CD 的"4090D 物理不可达"**：同事资料 `内核&测试.txt` 证明 4090D 有 P2P 路径——`libgdr_geforce_hook.so`（`NV50_THIRD_PARTY_P2P` 直接 RM 调用，绕过 `nvidia_p2p_get_pages`）+ BAR 扩容，`REGISTER_VIDMEM status=0` 注册成功。**但那次成功是 `-M posix`（host 暂存），资料明写"Peermem直接崩"——纯 peermem 直写（a/c 要用）未确认。本轮就是要把 peermem 这关验出来。**
+> **用户指令（重要）**：**不能用 netlab 内核**（无法用 bonding 设备，影响 node1/3 其他业务）；必须按 `D:\gds性能\node1&3测试\GDR编译部署_自维护仓库_20261111.md` 重编内核——重编内核 GDR/ummu 符号齐 + **bonding 可用**（文档 reload 输出 `bonding_dev_0 link ACTIVE`）。
+> 本任务分阶段、每阶段 gate，任一失败停并回报；**默认内核保持原厂基座（回退），自编译内核一次性启动**。
+
+## 〇、前置 / 回退基线（先做，记录全）
+
+- 独占判定按规范（node1/node3 可疑 PID `/proc` utime+stime 10s 差值；>5% 单核停，不 kill 他人）。
+- 记录两节点：`uname -r`、`grubby --default-kernel`/`--default-index`/`--info=ALL`、**原厂基座内核全名**（`6.6.0-159.4.2.153.20260624.9e7b708a0357.oe2403sp4.aarch64`，回退锚点）、`/boot` 空间、nvidia 驱动版本（node1 运行 575.64.05、源码 575.57.08）、`lsmod` udma/bridge、`/dev/uburma`、bonding_dev_0 现状、target/master/client PID/端口、vfio 盘、hugepages。
+- **回退预案**：默认内核=原厂基座（bonding 可用、供他人）；自编译内核用 `grub2-reboot` 一次性启动；失败重启回基座。记录原始 grub 默认，结束恢复。
+- 取料前置：节点无外网，gitcode 走公司代理（Windows 中转 clone/tarball + scp，或节点 http_proxy）；`/home/tong/umdk_gpu_isolated`（含 `libgdr_geforce_hook.so`、lib、run.sh、urma_perftest）`sudo -n` root 只读可拿（E3-BM 先例），拷到我方目录，**不改原目录/权限**。
+
+## 一、取料（记录 commit/md5）
+
+- kernel：`git clone --depth=1 -b openEuler-24.03-LTS-SP4-gdr https://gitcode.com/HaoyuWang2001/kernel.git`（初始 commit 9e7b708a）。
+- umdk：`git clone https://gitcode.com/HaoyuWang2001/umdk.git` → `git checkout -b gdr origin/gdr`。
+- 同事 hook：`/home/tong/umdk_gpu_isolated/lib/libgdr_geforce_hook.so` + 配套 lib/run.sh/urma_perftest，`sudo -n` 只读拷到我方目录，记 md5。
+- 前置检查（文档）：`arch`=aarch64、`rpm -q libummu-devel libummu`、`/usr/src/nvidia-575.57.08/nvidia/nv-p2p.h` + `Module.symvers` 存在。
+
+## 二、编内核本体（node1，aarch64，308 核）
+
+```
+cd kernel && make clean
+make ARCH=arm64 openeuler_defconfig
+./scripts/config --set-str CONFIG_LOCALVERSION "-gdr_e3cf"   # 自定义版本串
+make ARCH=arm64 -j$(nproc) NV_P2P_HEADER_PATH=
+```
+- **gate**：`cat include/config/kernel.release` 含自定义串；`grep ummu_sva_matt_map_phys_sg Module.symvers` 必须有（GDR 适配符号）。无则停。
+- `sudo make ARCH=arm64 modules_install && sudo make ARCH=arm64 install`；`grubby --info=ALL` 确认新内核条目。**默认仍设回原厂基座**（`grubby --set-default=<基座全名>`）。
+
+## 三、编 urma ko + UMDK 用户态
+
+- urma ko（**必须先装好内核**；可在进入自编译内核后编，或按文档用 NV_P2P 头编）：
+```
+export NV_P2P_ROOT=/usr/src/nvidia-575.57.08
+export NV_P2P_HEADER_PATH=${NV_P2P_ROOT}/nvidia
+export NV_P2P_SYMVERS_PATH=${NV_P2P_ROOT}/Module.symvers
+make ARCH=arm64 -j$(nproc) M=drivers/ub/urma NV_P2P_HEADER_PATH=${NV_P2P_HEADER_PATH} KBUILD_EXTRA_SYMBOLS=${NV_P2P_SYMVERS_PATH} modules
+./collector_urma.sh   # 产物 output/urma-ko-<commit>-aarch64-linux/（含 udma.ko + udma_nv_p2p_bridge.ko + reload_urma.sh）
+```
+  注：node1 运行驱动 575.64.05、源码 575.57.08；E3-CA 已证 nvidia_p2p 符号 CRC 跨小版本匹配，575.57.08 头可用。
+- UMDK 用户态：
+```
+cd umdk && mkdir -p build && cd build
+cmake ../src/ -DBUILD_ALL=disable -DBUILD_URMA=enable -DBUILD_URPC=disable -DBUILD_DLOCK=disable -DBUILD_UMS=disable
+make -j$(nproc) && cd .. && ./collector.sh   # output/umdk-<commit>-aarch64-linux/（liburma*.so + urma_perftest + env.sh）
+```
+- 产物部署到 **node1 + node3**（同 aarch64/OS）。
+
+## 四、重启进自编译内核 + 加载模块
+
+- node1/node3 各 `grub2-reboot <自编译内核>` 一次性启动 → `uname -r` 必须含 `-gdr_e3cf` → `grep ummu_sva_matt_map_phys_sg /lib/modules/$(uname -r)/build/Module.symvers` 有。
+- node1：`reload_urma.sh`（每次重启后手动）→ `nvidia-smi` 正常（若报错按文档装 `NVIDIA-Linux-aarch64-575.57.08.run`，**先回报再装**）→ `lsmod` udma **270336** + udma_nv_p2p_bridge。
+- node3（无 GPU）：加载 udma ko（**不加载 bridge/nvidia**）+ UMDK；重启 target/master/client。
+- **gate**：两节点进自编译内核、node1 udma 270336+bridge、nvidia-smi 正常。失败重启回基座并回报。
+
+## 五、BAR 扩容 + GeForce hook（node1，按 内核&测试.txt）
+
+- `unload_nv.sh`（卸 nvidia）→ `echo 15 > /sys/bus/pci/devices/0000:27:00.0/resource1_resize`（BAR1 扩容）→ 重载 nvidia/urma 模块（`my_module`/`insmod.sh`/reload_urma.sh，按现场脚本）。
+- 记录扩容前后 `lspci -s 27:00.0 -vv` 的 BAR1 大小。
+- hook：GDR 测试进程 `LD_PRELOAD=<我方目录>/libgdr_geforce_hook.so` + `LD_LIBRARY_PATH=<umdk lib>`（或直接用同事 umdk_gpu_isolated 的 run.sh，与 txt 一致）。
+
+## 六、GDR 连通验证（核心 gate，peermem）
+
+- node1：`sudo ./env.sh bin/urma_perftest write_lat_gpu --gpu-mode=peermem -d udmac0d1e2 -s 102400 -n 50000 -I 0 --eid_idx 0 --ctp`
+- node3：`sudo ./env.sh bin/urma_perftest write_lat_gpu -d udmac0d1e2 -s 102400 -n 50000 -I 0 --eid_idx 0 --ctp -S 141.61.84.245`
+- **再测 bonding_dev_0**（同命令 `-d bonding_dev_0`，验证 bonding 兼容——这是重编内核的核心动机）。
+- **gate**：errors=0、completed>0、`[gdr-geforce] REGISTER_VIDMEM status=0x0` → **peermem GDR 在 4090D 可用**。
+- 若 peermem 崩/失败：抓完整日志 + dmesg（grep `udma|ummu|nvidia_p2p|NVRM|gdr-geforce|P2P`），**停并回报，不猜**（txt 已提示 peermem 可能崩，这是本轮要定性的关键点）。
+
+## 七、bonding 兼容验证 + SPDK peermem 诊断
+
+- bonding：`bonding_dev_0` link ACTIVE；确认 node1/3 其他业务可用 bonding（重编内核 vs netlab 的差异点）。
+- SPDK peermem（txt 崩的那个，诊断性）：GDR 连通通过后，试 `urma_perf … -M peermem`（txt 第 28 行命令改 `-M peermem`，target 用 `target_nvme_takeover.sh`）；复现/定位崩溃，记录日志。**本轮只诊断，不强求通**。
+
+## 八、约束 / 回退
+
+- **默认内核保持原厂基座**（回退锚点）；自编译内核一次性启动；结束恢复 grub 默认。
+- 不 kill 他人；独占窗口；node2/4 不碰；分阶段 gate，任一失败停并回报。
+- 编译产物/脚本不回传整文件，记 commit/md5/命令；源码改动（若有）按代码保管规则回传最小 diff。
+- 装 nvidia 驱动、改 grub 默认、BAR 扩容等高风险动作前先记录现状；nvidia 驱动安装先回报。
+- 本轮**不跑 Mooncake a/c 全量**（peermem 连通通过后另派 E3-CG 带 hook 复测 a/c）。
+
+## 九、产物 / 回执
+
+- 测试侧 `测试相关资料/第二组测试环境/E3-CF_gdr_kernel_rebuild_20261112/`；本地 `D:\gds性能\node1&3测试\`。
+- 台账 §116；INDEX R79；五段式回执。
+- 必须给：独占判定；回退基线（原始内核/grub）；kernel/umdk commit + hook md5；ummu 符号检查；自编译内核 uname + udma 270336+bridge；BAR1 扩容前后；**peermem GDR 连通结果（udmac0d1e2 + bonding_dev_0，errors/completed/REGISTER_VIDMEM）**；bonding ACTIVE；SPDK peermem 诊断；环境是否还原（默认内核回基座）。
+- 预计 **1.5–2 h**（内核全量编 30–60 min + ko/UMDK 15 + 部署/重启 15 + BAR/hook/测试 15 + 记录），建议分窗口；**peermem 连通是核心 gate，通了才有 Mooncake a/c 下一步**。
 
 ---
 
