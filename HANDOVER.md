@@ -187,6 +187,7 @@
 | E3-BX | 2026-11-11 | **只改口径 sheet 说明：a/b 偏差改为 timing+满段三元分解；Sheet1 数据不动** | 待执行 | 用户拍板“按口径差、不改表”结案。前置：xlsx 当前 md5 `536db86c`、Sheet1 a/b 1/1=424.84/531.60、口径 sheet R66/48。①备份、记录前 md5；②只改口径 sheet 的说明文字（A19/B19 或新增行）：a/b 1/1 取 clean 值 424.84/531.60；E3-BS 427.66/553.94 与 E3-BU 差 +2.82/+22.34，分解为 timing +5.28/+17.07、满段 −2.46（噪声）/+5.27；b +22 µs 主要是 timing（staging 每 IO 多 4 条日志），a 满段≈0；E3-BW b 544.30 是 timing 口径，clean 等效≈527.2，不写入表；③**Sheet1 数据格一律不动**；④测试侧结果 md 若已按三元分解则不改，若仍有“22 µs 全归满段”则修正；⑤回读、记录后 md5。不改源码/不 kill/不跑测试。产物 R71 + 台账 §107 + INDEX + 五段式回执。 |
 | E3-BY | 2026-11-11 | **只读预检：node1/node3 现状 vs 同事 GDR 内核文档**（不编译/不重启/不改环境） | 已完成（只读预检；回执已收；4 项待拍板） | 目标：确认“换内核”方案的现场缺口，输出文档要求 vs 现场对照表。node1 检查：`arch`、`uname -r`、OS、`rpm -q libummu-devel libummu`、`/usr/src/nvidia-*`（`nvidia/nv-p2p.h`、`Module.symvers`、驱动版本 575.64.05 vs 文档 575.57.08）、`modinfo udma`/`lsmod`（262144 vs 270336、udma_nv_p2p_bridge）、`ls /dev/uburma`、`grubby --default-kernel`/`--info=ALL`、`/boot`/`/lib/modules`、gcc/make/git/cmake、磁盘空间、已有 GDR 构建产物（`reload_urma.sh`/`collector_urma.sh`）、同事进程/端口（重启影响）。node3 检查：`arch`、`uname -r`、OS、`libummu`、`lsmod`/`modinfo udma`、`/dev/uburma`、target/master PID/端口/库路径、盘/vfio/hugepages、同事进程；判断只需 UMDK 用户态还是也要同步内核模块。**只读；不 sudo 写、不编译、不重启、不 rmmod、不 kill、不碰 node2/4**；拿不到的项标缺口。产物 R72 + 台账 §108 + INDEX + 五段式回执。**2026-11-11 回执：两节点 arch=aarch64、内核基座 6.6.0-159.4.2.153… 同、libummu 1.0.5-1、UMDK 26.06.0-B020 两节点同 md5；缺 udma 270336+bridge（当前 262144 stub；netlab 内核 udma.ko 11,457,808B 未加载、无 bridge）。已装 6.6.0-netlab_pcie_ub_compat+（grub index=0，非默认），是否是文档 GDR 内核待同事确认。NVIDIA 源码只有 575.57.08（symvers root 600），运行驱动 575.64.05，不匹配。node1 /boot 243M 偏紧；node3 liburma.so.0 指向 .bak_corrupt（264,576B），需修。node1 15+ 会话/他人 master 9008/50058/docker；node3 12 盘 vfio + 他人 target/master；维护窗口需协调。4 项待拍板：①udma 编 575.57.08 还是 575.64.05；②netlab 内核是否即 GDR 内核；③维护窗口谁协调；④node3 liburma symlink 是否改回 .so.0.0.3。产物 R72 9 文件/40KB；台账 §108；INDEX R72。** |
 | E3-BZ | 2026-11-11 | **GDR 内核方案只读核查（二）：netlab 内核是否可复用、NVIDIA 源码版本、node3 库链、node1 /boot** | 已完成（回执已收；netlab 内核+现成 GDR 模块可复用，无需编译） | 承接 E3-BY。①**netlab 内核**：`grubby --info=ALL`；`ls /lib/modules/6.6.0-netlab_pcie_ub_compat+/build`；`grep ummu_sva_matt_map_phys_sg /lib/modules/.../build/Module.symvers`；`modinfo /lib/modules/.../udma.ko`（version/vermagic/depends/srcversion）；找 `udma_nv_p2p_bridge.ko`、查 `modules.dep`/`depmod -n`；`grep -E 'UMMU|NV_P2P|GDR' /boot/config-6.6.0-netlab*`；`ls /boot/*netlab*`。②**NVIDIA**：`ls /usr/src/nvidia-*`、`nvidia-smi` 驱动版本、`dkms status`；确认是否有 **575.64.05** 的 `nv-p2p.h`/`Module.symvers`；只有 575.57.08 时记录缺口，不编译。③**node3 库链**：`ls -l /usr/lib64/liburma*`、`readlink -f`、md5；运行中 target/master 的 `LD_LIBRARY_PATH`/`/proc/<pid>/maps`；`git/cmake` 版本；12 块 vfio 盘属主/进程。④**node1 /boot**：`df -h /boot`、`ls /boot`、旧内核/rescue、`dracut`/initramfs 工具、docker 容器/同事进程。**只读；不编译/不装/不 rmmod/不重启/不 kill/不改 grub**；node2/4 不碰。产物 R73 + 台账 §109 + INDEX + 五段式回执。**2026-11-11 回执：netlab 内核可复用，且现成 GDR udma/bridge 已存在——不需要编内核。①`/home/tong/project_4090/kernel` 是完整源码树，Module.symvers 1,403,600，`ummu_sva_matt_map_phys_sg` 1 条、`ummu_*` 47；netlab 模块树完整（ubase/ubcore/uburma/ubagg/udma/ummu/ummu-core/ummu-pmu）。②netlab 自带 udma 11,457,808B（srcver 8E42…，p2p21/gdr0）= 精简版；现成 GDR 版在 `/home/g00953922/gdr/urma_driver_netlab/`：udma 11,912,960(n1)/11,913,040(n3)（srcver F3D2…，p2p79/gdr52）、bridge 318,024/318,456（depends udma,nvidia），vermagic 均 `6.6.0-netlab_pcie_ub_compat+` 逐字匹配。③**不能只换模块不换内核**：基座内核 Module.symvers 的 `ummu_sva_matt_map_phys_sg`/`any_ummu_`/`nvidia_p2p` 全 0；现成 udma vermagic 是 netlab → 必须切 netlab 内核。④NVIDIA：575.57.08 源码/symvers 齐全（8,982B），575.64.05 缺 symvers，运行驱动 575.64.05 → **硬阻塞**；现成模块按 575.57.08 编。⑤node3 liburma.so.0→.bak_corrupt，4 个进程在用；node1 链正常。⑥node1 /boot 243M，可回收 ~237M；dracut 在。建议：不编译，切 netlab + 换现成 udma/bridge 三件一起；node1 需维护窗口；node3 只修 UMDK/symlink（无 GPU，bridge 依赖 nvidia 不能加载），需属主确认。4 项待拍板：①用现成 .ko 不编；②netlab 是否即 GDR 内核；③窗口（建议 node1 先/或 node3 UMDK 先）；④node3 symlink 是否改。产物 R73 17 文件/85KB；台账 §109；INDEX R73。** |
+| E3-CA | 2026-11-11 | **只读核查：netlab 内核的 nvidia 模块版本与现成 GDR udma/bridge 的符号匹配** | 待执行 | 目的：E3-BZ 只看到当前基座驱动 575.64.05，未核 netlab 内核自带的 nvidia 模块版本；若 netlab 的 nvidia 是 **575.57.08**，现成 GDR 模块（按 575.57.08 编）切过去就能直接用，硬阻塞消失。只读：①`modinfo -k 6.6.0-netlab_pcie_ub_compat+ nvidia/nvidia_uvm/nvidia_modeset/nvidia_drm/gdrdrv`；②`find /lib/modules/6.6.0-netlab... -name 'nvidia*.ko*'`、`grep -E 'nvidia|udma_nv_p2p_bridge' modules.dep`；③`modinfo -k netlab /home/g00953922/gdr/urma_driver_netlab/udma.ko`/`bridge.ko`；`modprobe --dump-modversions` 对比 nvidia 符号名/CRC；④`dkms status`、`grubby --info=ALL`、netlab initramfs/`/boot` 空间；⑤node3 无 nvidia，确认 bridge 不能加载、只需 UMDK。**只读；不编译/不装/不rmmod/不重启/不kill/不改grub；node2/4 不碰。** 产物 R74 + 台账 §110 + INDEX + 五段式回执。 |
 
 ---
 
@@ -5479,3 +5480,66 @@ who; ps -eo pid,user,comm,args | grep -E 'mooncake|nvmf|spdk|docker' | grep -v g
 - 产物：`测试相关资料/第二组测试环境/E3-BZ_precheck2_20261111/`；台账 §109；INDEX R73；五段式回执。
 - 必须给：netlab 内核符号/udma modinfo/bridge 结果、NVIDIA 源码版本缺口、node3 库链与进程、node1 /boot 可用空间、对 4 项决策的建议。
 - 预计 **10–15 分钟**。
+
+---
+
+# E3-CA（待执行 · 2026-11-11）· 只读核查：netlab 内核 nvidia 模块 vs 现成 GDR 模块符号匹配
+
+> E3-BZ 的“硬阻塞”是：当前基座内核运行驱动 575.64.05，而现成 GDR udma/bridge 按 575.57.08 编。**但切到 netlab 内核后，用的是 netlab 内核自己的 nvidia 模块**；如果它是 575.57.08，现成模块就匹配，阻塞可能不存在。
+> 本任务只读，不编译/不装/不 rmmod/不重启/不 kill/不改 grub；node2/4 不碰。
+
+## 一、netlab 内核的 nvidia 模块
+
+```bash
+K=6.6.0-netlab_pcie_ub_compat+
+modinfo -k $K nvidia 2>&1 | grep -E 'filename|version|vermagic|srcversion'
+modinfo -k $K nvidia_uvm 2>&1 | grep -E 'filename|version|vermagic'
+modinfo -k $K nvidia_modeset 2>&1 | grep -E 'filename|version|vermagic'
+modinfo -k $K nvidia_drm 2>&1 | grep -E 'filename|version|vermagic'
+modinfo -k $K gdrdrv 2>&1 | grep -E 'filename|version|vermagic'
+find /lib/modules/$K -name 'nvidia*.ko*' -o -name 'gdrdrv*.ko*'
+grep -E 'nvidia|udma_nv_p2p_bridge' /lib/modules/$K/modules.dep 2>&1 | head -n 20
+dkms status 2>&1
+```
+
+- 重点：netlab 的 `nvidia` 版本是 575.57.08 还是 575.64.05；`nvidia.ko` 是否存在、vermagic 是否 netlab；`gdrdrv` 是否有。
+
+## 二、现成 GDR 模块的符号依赖
+
+```bash
+D=/home/g00953922/gdr/urma_driver_netlab
+modinfo -k $K $D/udma.ko 2>&1 | grep -E 'filename|version|vermagic|depends|srcversion'
+modinfo -k $K $D/udma_nv_p2p_bridge.ko 2>&1 | grep -E 'filename|version|vermagic|depends|srcversion'
+modprobe --dump-modversions $D/udma.ko 2>&1 | grep -i nvidia | head
+modprobe --dump-modversions $D/udma_nv_p2p_bridge.ko 2>&1 | grep -i nvidia | head
+NV=$(modinfo -k $K -n nvidia 2>/dev/null); echo "NV=$NV"; modprobe --dump-modversions "$NV" 2>&1 | grep -Ei 'nvidia_p2p|nvidia_get|nvidia_put' | head
+```
+
+- 对比模块引用的 nvidia 符号名/CRC 与 netlab `nvidia.ko` 导出的符号/CRC；若 CRC 一致，方可直接用。
+- 若 `modprobe --dump-modversions` 不可用/权限不足，记录缺口，不猜。
+
+## 三、启动/空间/节点
+
+```bash
+grubby --default-kernel; grubby --info=ALL | grep -E 'index|kernel|title'
+ls -lh /boot/*netlab* 2>&1
+df -h /boot
+# node3：确认无 GPU/nvidia，bridge 不能加载
+modinfo -k $(uname -r) nvidia 2>&1 | head -n 2
+lsmod | grep -E 'nvidia|gdrdrv' 2>&1
+```
+
+## 四、判定
+
+| 结果 | 结论 |
+| --- | --- |
+| netlab nvidia = 575.57.08，且 ready udma/bridge 的 nvidia 符号 CRC 匹配 | **可直接切 netlab + 用现成模块**，不需换驱动/编内核 |
+| netlab nvidia = 575.64.05 或不存在/CRC 不匹配 | 需要：①给 netlab 内核装 575.57.08 驱动；或②拿到 575.64.05 的 `Module.symvers` 重编 udma/bridge；或③用 575.57.08 源码重建模块 |
+| node3 | 无 GPU → bridge 依赖 nvidia 不能加载；target 只需 UMDK/URMA，不需要 GDR 模块 |
+
+## 五、产物 / 约束
+
+- 只读；不编译/不安装/不 rmmod/不重启/不 kill/不改 grub；node2/4 不碰。
+- 产物：`测试相关资料/第二组测试环境/E3-CA_precheck3_20261111/`；台账 §110；INDEX R74；五段式回执。
+- 必须给：netlab nvidia 版本/vermagic、ready 模块 depends/符号 CRC、是否能直接加载、node1 /boot 与 netlab initramfs 状态、node3 无 nvidia 确认、对 4 项决策的最终建议。
+- 预计 **8–12 分钟**。
