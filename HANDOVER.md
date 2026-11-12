@@ -188,6 +188,7 @@
 | E3-BY | 2026-11-11 | **只读预检：node1/node3 现状 vs 同事 GDR 内核文档**（不编译/不重启/不改环境） | 已完成（只读预检；回执已收；4 项待拍板） | 目标：确认“换内核”方案的现场缺口，输出文档要求 vs 现场对照表。node1 检查：`arch`、`uname -r`、OS、`rpm -q libummu-devel libummu`、`/usr/src/nvidia-*`（`nvidia/nv-p2p.h`、`Module.symvers`、驱动版本 575.64.05 vs 文档 575.57.08）、`modinfo udma`/`lsmod`（262144 vs 270336、udma_nv_p2p_bridge）、`ls /dev/uburma`、`grubby --default-kernel`/`--info=ALL`、`/boot`/`/lib/modules`、gcc/make/git/cmake、磁盘空间、已有 GDR 构建产物（`reload_urma.sh`/`collector_urma.sh`）、同事进程/端口（重启影响）。node3 检查：`arch`、`uname -r`、OS、`libummu`、`lsmod`/`modinfo udma`、`/dev/uburma`、target/master PID/端口/库路径、盘/vfio/hugepages、同事进程；判断只需 UMDK 用户态还是也要同步内核模块。**只读；不 sudo 写、不编译、不重启、不 rmmod、不 kill、不碰 node2/4**；拿不到的项标缺口。产物 R72 + 台账 §108 + INDEX + 五段式回执。**2026-11-11 回执：两节点 arch=aarch64、内核基座 6.6.0-159.4.2.153… 同、libummu 1.0.5-1、UMDK 26.06.0-B020 两节点同 md5；缺 udma 270336+bridge（当前 262144 stub；netlab 内核 udma.ko 11,457,808B 未加载、无 bridge）。已装 6.6.0-netlab_pcie_ub_compat+（grub index=0，非默认），是否是文档 GDR 内核待同事确认。NVIDIA 源码只有 575.57.08（symvers root 600），运行驱动 575.64.05，不匹配。node1 /boot 243M 偏紧；node3 liburma.so.0 指向 .bak_corrupt（264,576B），需修。node1 15+ 会话/他人 master 9008/50058/docker；node3 12 盘 vfio + 他人 target/master；维护窗口需协调。4 项待拍板：①udma 编 575.57.08 还是 575.64.05；②netlab 内核是否即 GDR 内核；③维护窗口谁协调；④node3 liburma symlink 是否改回 .so.0.0.3。产物 R72 9 文件/40KB；台账 §108；INDEX R72。** |
 | E3-BZ | 2026-11-11 | **GDR 内核方案只读核查（二）：netlab 内核是否可复用、NVIDIA 源码版本、node3 库链、node1 /boot** | 已完成（回执已收；netlab 内核+现成 GDR 模块可复用，无需编译） | 承接 E3-BY。①**netlab 内核**：`grubby --info=ALL`；`ls /lib/modules/6.6.0-netlab_pcie_ub_compat+/build`；`grep ummu_sva_matt_map_phys_sg /lib/modules/.../build/Module.symvers`；`modinfo /lib/modules/.../udma.ko`（version/vermagic/depends/srcversion）；找 `udma_nv_p2p_bridge.ko`、查 `modules.dep`/`depmod -n`；`grep -E 'UMMU|NV_P2P|GDR' /boot/config-6.6.0-netlab*`；`ls /boot/*netlab*`。②**NVIDIA**：`ls /usr/src/nvidia-*`、`nvidia-smi` 驱动版本、`dkms status`；确认是否有 **575.64.05** 的 `nv-p2p.h`/`Module.symvers`；只有 575.57.08 时记录缺口，不编译。③**node3 库链**：`ls -l /usr/lib64/liburma*`、`readlink -f`、md5；运行中 target/master 的 `LD_LIBRARY_PATH`/`/proc/<pid>/maps`；`git/cmake` 版本；12 块 vfio 盘属主/进程。④**node1 /boot**：`df -h /boot`、`ls /boot`、旧内核/rescue、`dracut`/initramfs 工具、docker 容器/同事进程。**只读；不编译/不装/不 rmmod/不重启/不 kill/不改 grub**；node2/4 不碰。产物 R73 + 台账 §109 + INDEX + 五段式回执。**2026-11-11 回执：netlab 内核可复用，且现成 GDR udma/bridge 已存在——不需要编内核。①`/home/tong/project_4090/kernel` 是完整源码树，Module.symvers 1,403,600，`ummu_sva_matt_map_phys_sg` 1 条、`ummu_*` 47；netlab 模块树完整（ubase/ubcore/uburma/ubagg/udma/ummu/ummu-core/ummu-pmu）。②netlab 自带 udma 11,457,808B（srcver 8E42…，p2p21/gdr0）= 精简版；现成 GDR 版在 `/home/g00953922/gdr/urma_driver_netlab/`：udma 11,912,960(n1)/11,913,040(n3)（srcver F3D2…，p2p79/gdr52）、bridge 318,024/318,456（depends udma,nvidia），vermagic 均 `6.6.0-netlab_pcie_ub_compat+` 逐字匹配。③**不能只换模块不换内核**：基座内核 Module.symvers 的 `ummu_sva_matt_map_phys_sg`/`any_ummu_`/`nvidia_p2p` 全 0；现成 udma vermagic 是 netlab → 必须切 netlab 内核。④NVIDIA：575.57.08 源码/symvers 齐全（8,982B），575.64.05 缺 symvers，运行驱动 575.64.05 → **硬阻塞**；现成模块按 575.57.08 编。⑤node3 liburma.so.0→.bak_corrupt，4 个进程在用；node1 链正常。⑥node1 /boot 243M，可回收 ~237M；dracut 在。建议：不编译，切 netlab + 换现成 udma/bridge 三件一起；node1 需维护窗口；node3 只修 UMDK/symlink（无 GPU，bridge 依赖 nvidia 不能加载），需属主确认。4 项待拍板：①用现成 .ko 不编；②netlab 是否即 GDR 内核；③窗口（建议 node1 先/或 node3 UMDK 先）；④node3 symlink 是否改。产物 R73 17 文件/85KB；台账 §109；INDEX R73。** |
 | E3-CA | 2026-11-11 | **只读核查：netlab 内核的 nvidia 模块版本与现成 GDR udma/bridge 的符号匹配** | 已完成（回执已收；CRC 匹配，无需换驱动/编译） | 目的：E3-BZ 只看到当前基座驱动 575.64.05，未核 netlab 内核自带的 nvidia 模块版本；若 netlab 的 nvidia 是 **575.57.08**，现成 GDR 模块（按 575.57.08 编）切过去就能直接用，硬阻塞消失。只读：①`modinfo -k 6.6.0-netlab_pcie_ub_compat+ nvidia/nvidia_uvm/nvidia_modeset/nvidia_drm/gdrdrv`；②`find /lib/modules/6.6.0-netlab... -name 'nvidia*.ko*'`、`grep -E 'nvidia|udma_nv_p2p_bridge' modules.dep`；③`modinfo -k netlab /home/g00953922/gdr/urma_driver_netlab/udma.ko`/`bridge.ko`；`modprobe --dump-modversions` 对比 nvidia 符号名/CRC；④`dkms status`、`grubby --info=ALL`、netlab initramfs/`/boot` 空间；⑤node3 无 nvidia，确认 bridge 不能加载、只需 UMDK。**只读；不编译/不装/不rmmod/不重启/不kill/不改grub；node2/4 不碰。** 产物 R74 + 台账 §110 + INDEX + 五段式回执。**2026-11-12 回执：硬阻塞不成立——现成 udma+bridge 可直接用，不需要换驱动/补 symvers/重编/编内核。判据是 vermagic+符号 CRC：bridge vermagic 同 netlab；`nvidia_p2p_get_pages 0x5b3f3e79`、`put_pages 0x642487ac`、`free_page_table 0xf42ca687` 三方互证一致（bridge 引用侧、netlab 官方 nvidia-peermem.ko、575.57.08 Module.symvers 导出侧）。netlab nvidia 实际是 **575.64.05**（不是 575.57.08），但 CRC 只哈希符号原型，跨小版本匹配。node1 netlab nvidia/nvidia_uvm/modeset/drm/peermem 全 575.64.05、vermagic netlab；gdrdrv 不存在；两内核 nvidia.ko version+srcversion 同 `D233EEC6…`。node3 netlab nvidia 595.84（无 GPU、未加载，不影响）。node1 grub index0 netlab 非默认/index1 基座默认/index2 rescue；/boot netlab 四件齐、initramfs 0 nvidia 条目 → 切内核不需新建 initramfs；243M 可用。nvidia_peermem 已在跑（传统 peermem 路径通），但 URMA udma 仍 262144 stub、bridge 0。未实测 insmod（只读）；切后 nvidia 是否自动加载未验证，可能需手动 `modprobe nvidia`。风险：node1 25 会话+容器+他人 master/client；node3 2 nvmf+3 master+10 vfio；insmod 前 rmmod stub 会短暂中断 URMA。建议：①不编；②切 netlab（575.64.05+官方 peermem+全量 udma/bridge 自洽）；③node3 先（无 GPU，只换全量 udma），node1 后（GDR 关键路径，必须重启）；④node3 liburma 不改全局软链，维持 LD_LIBRARY_PATH。产物 R74 10 文件/45KB；台账 §110；INDEX R74。** |
+| E3-CB | 2026-11-12 | **切 netlab 内核 + 加载现成 GDR 模块：node3 先、node1 后**（用户已确认可重启 node1；node1/3 独占） | 待执行 | 前置：核实 node1/node3 无他人进程/端口（独占但仍先查）；记录当前内核、grub 默认/索引、/boot、udma srcversion、target/master PID、vfio 盘、hugepages。**A. node3（先）**：一次性启动 netlab（保留基座默认）→ `uname -r` 必须 netlab → 按依赖加载 netlab 模块树 + 全量 `udma.ko`（**不加载 bridge**，无 GPU）→ `lsmod` 看 udma 270336、srcversion F3D2…（非 stub 673E…）→ 重启 target/master/client → b 1/1 + NoF-host 10s 冒烟 failed=0。**B. node1（后，A 成功才做）**：一次性启动 netlab → `uname -r` 确认 → `modprobe nvidia`（若未自动，nvidia-smi 必须正常）→ 加载全量 udma + bridge（按依赖）→ `lsmod` 看 udma 270336 + udma_nv_p2p_bridge → `/dev/uburma` → 重启 target/master/client → b/NoF-host 回归 → a/c/d 1/1 100-key 10s 冒烟 failed=0。**回退**：基座内核保持默认；netlab 失败就重启回基座；模块加载失败就 rmmod/重启；记录全部命令/PID/端口/模块/md5。不改源码/不改 target/strip；node2/4 不碰；异常保留。产物 R75 + 台账 §111 + INDEX + 五段式回执。 |
 
 ---
 
@@ -5545,3 +5546,58 @@ lsmod | grep -E 'nvidia|gdrdrv' 2>&1
 - 产物：`测试相关资料/第二组测试环境/E3-CA_precheck3_20261111/`；台账 §110；INDEX R74；五段式回执。
 - 必须给：netlab nvidia 版本/vermagic、ready 模块 depends/符号 CRC、是否能直接加载、node1 /boot 与 netlab initramfs 状态、node3 无 nvidia 确认、对 4 项决策的最终建议。
 - 预计 **8–12 分钟**。
+
+---
+
+# E3-CB（待执行 · 2026-11-12）· 切 netlab 内核 + 加载现成 GDR 模块：node3 先、node1 后
+
+> 用户已确认：**node1 可以重启**；node1/node3 目前我们独占。
+> E3-CA 已证明现成 `udma.ko` + `udma_nv_p2p_bridge.ko` 与 netlab 内核的 vermagic/符号 CRC 匹配，**不编译、不换驱动**；本任务只做“切内核 + 换模块 + 冒烟”。
+
+## 〇、前置（先做，任何一项不满足就停）
+
+- 确认 node1/node3 无他人进程/端口（独占也要先查）：`who`、`ps -eo pid,user,comm,args | grep -E 'mooncake|nvmf|spdk|docker'`、`ss -ltnp`；记录 PID/端口；**不 kill 不明进程**。
+- 记录 node1/node3 当前：`uname -r`、`grubby --default-kernel`/`--info=ALL`、`ls /boot`、`modinfo udma`/`srcversion`、`lsmod`、`/dev/uburma`、hugepages、target/master PID、vfio 盘。
+- 用台账 IP：node1 `141.61.84.245`、node3 `141.61.84.149`；**不要用裸主机名**（会解析到另一套 10.171.x 机器）。
+- 基座内核保持 grub 默认；netlab 用**一次性启动**（`grub2-reboot`/启动界面选），验证通过前不改默认。
+
+## 一、node3（先做，风险低：无 GPU）
+
+1. 停止 node3 我方 target/master/client（按 PID/脚本；先记录，不清盘）。
+2. 一次性启动 netlab：`grub2-reboot 0`（或启动界面选 `6.6.0-netlab_pcie_ub_compat+`）；等待 SSH 回来。
+3. `uname -r` 必须是 `6.6.0-netlab_pcie_ub_compat+`；不是就停并回报。
+4. 加载模块：
+   - 先按 netlab 模块树 `modules.dep` 处理依赖（`ubcore/uburma/ubagg` 等）；
+   - 用现成全量 `udma.ko`（node3 版，`/home/g00953922/gdr/urma_driver_netlab/`）；
+   - **不加载 bridge**（node3 无 GPU，bridge 依赖 nvidia）；
+   - 若存在 `reload_urma.sh` 则用；没有就按 `modprobe`/`insmod` 依赖顺序手动加载，记录命令。
+5. 验证：`lsmod` 的 `udma` 为 **270336**、`srcversion` 为 `F3D2…`（不是 stub `673E…`）；`/dev/uburma` 正常；`dmesg` 无致命错误。
+6. 重启 target/master/client（E3-BD 脚本/原参数；strip64 不改），跑 **b 1/1 + NoF-host 10s**，failed=0。
+7. 通过后再做 node1；node3 失败就停并回报（不改 node1）。
+
+## 二、node1（node3 通过后；GDR 关键路径）
+
+1. 停止 node1 我方 client/bench；确认 docker/他人进程是否属于我们（不属于就停并回报）。
+2. 一次性启动 netlab：`grub2-reboot 0`（保持基座默认）；等待 SSH。
+3. `uname -r` 必须 netlab；`modprobe nvidia`（若未自动；`nvidia-smi` 必须正常）；`lsmod` 看 nvidia/nvidia_uvm 等。
+4. 加载模块（按依赖）：
+   - 全量 `udma.ko`（node1 版）；
+   - `udma_nv_p2p_bridge.ko`（depends udma,nvidia）；
+   - 如存在 `reload_urma.sh` 则用；没有就手动按依赖 `modprobe`/`insmod`，记录。
+   - 加载前先 `rmmod` 旧的 stub `udma`（会短暂中断 URMA；独占窗口内做）。
+5. 验证：`lsmod` 显示 **udma 270336 + udma_nv_p2p_bridge**；`/dev/uburma`；`nvidia-smi`；`dmesg` 无致命错误。
+6. 重启 target（node3）/master/client，先 **b/NoF-host 回归**，再 **a/c/d 1/1 100-key 10s 冒烟**，failed=0。
+7. 若 a/c/d 仍 blocked：保留日志/错误码，停并回报；不要继续改驱动/编内核。
+
+## 三、回退
+
+- **基座内核保持 grub 默认**；netlab 失败时重启回基座（`grub2-reboot 1` 或启动界面选基座）。
+- 模块加载失败：`rmmod` 已加载模块或直接重启；恢复 target/master/client 原状态。
+- 记录所有命令、PID、端口、`lsmod`、`uname -r`、`nvidia-smi`、冒烟结果、回退步骤。
+
+## 四、约束 / 产物
+
+- 不改源码、不改 target/strip、不碰 node2/4；不 kill 不明进程；异常保留。
+- 产物：`测试相关资料/第二组测试环境/E3-CB_netlab_switch_20261112/`；台账 §111；INDEX R75；五段式回执。
+- 必须给：两节点切换前后 `uname -r`/grub、模块加载命令与 `lsmod`（udma 版本/srcversion/bridge）、nvidia-smi、UB 设备、target/master/client PID/端口、b/NoF-host 与 a/c/d 冒烟原始值、失败/回退记录。
+- 预计：node3 10–15 min；node1 15–25 min；合计 30–40 min。
