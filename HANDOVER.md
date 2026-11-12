@@ -202,7 +202,7 @@
 | E3-CB | 2026-11-12 | **切 netlab 内核 + 加载现成 GDR 模块：node3 先、node1 后**（用户已确认可重启 node1；node1/3 独占） | 已完成（回执已收；内核+bridge 成功，b/NoF-host 通，a/c/d 仍 blocked） | 前置：核实 node1/node3 无他人进程/端口（独占但仍先查）；记录当前内核、grub 默认/索引、/boot、udma srcversion、target/master PID、vfio 盘、hugepages。**A. node3（先）**：一次性启动 netlab（保留基座默认）→ `uname -r` 必须 netlab → 按依赖加载 netlab 模块树 + 全量 `udma.ko`（**不加载 bridge**，无 GPU）→ `lsmod` 看 udma 270336、srcversion F3D2…（非 stub 673E…）→ 重启 target/master/client → b 1/1 + NoF-host 10s 冒烟 failed=0。**B. node1（后，A 成功才做）**：一次性启动 netlab → `uname -r` 确认 → `modprobe nvidia`（若未自动，nvidia-smi 必须正常）→ 加载全量 udma + bridge（按依赖）→ `lsmod` 看 udma 270336 + udma_nv_p2p_bridge → `/dev/uburma` → 重启 target/master/client → b/NoF-host 回归 → a/c/d 1/1 100-key 10s 冒烟 failed=0。**回退**：基座内核保持默认；netlab 失败就重启回基座；模块加载失败就 rmmod/重启；记录全部命令/PID/端口/模块/md5。不改源码/不改 target/strip；node2/4 不碰；异常保留。产物 R75 + 台账 §111 + INDEX + 五段式回执。**2026-11-12 回执：两节点均切到 6.6.0-netlab_pcie_ub_compat+（一次性启动、默认仍基座）；全量 udma 270336/srcversion F3D2CA85B0F488DE71E3062（原 stub 262144/673E…）；node1 bridge 18C54A1F… 已加载、dmesg `UDMA: GPU P2P ops registered by udma_nv_p2p_bridge`；nvidia 575.64.05 自动加载+peermem；/dev/uburma 7。b 1/1 10s 26,528 q/10.35 GiB/s/avg 377.45（E3-BD 26,428/10.32/378.45，≤0.8%）；NoF-host 21,309 q/8.32 GiB/s。a/c 仍 `Failed to register segment … Unknown error 2048 → register_buffer failed ret=-600`；d `cuMemGetHandleForAddressRange rc=801 → peermem → -2048`。**所有 GPU 缓冲路径都倒在 URMA GPU 段注册，所有 host 缓冲路径全通** → 缺口收敛到一条路径，不是 NoF/内存差异；按规格停手。途中阻断：netlab 下 PCIe NVMe 无 IOMMU 组（IORT don't map）→ vfio probe -22，用 `vfio enable_unsafe_noiommu_mode=Y` 绑定 5 盘（内核 taint、无 DMA 隔离，正式跑分前需评估/开 SMMU）。前置发现两节点非独占（node1 他人 HA master 773%/client 228%/容器/25 会话；node3 nvmf 598%/client 253%/14 会话）→ 授权后按 PID 精确 kill、未用 pkill；`kill -0` 对 root EPERM 误判已改用 `sudo -n kill -0`；node1 重启把他人 vfio 2b,91,92,a1,a2 释放回 nvme、未恢复。node3 target e7440ae0:4457/Raid0 strip64 num_blocks 75,014,659,200；master 50056/9006/8086；client 50156；hugepages 7168。段端点易错：client TE RPC :15793 vs master 登记段端点 141.61.84.149:13550。未做 16/1/16/16/8MB/strip。回退：基座仍是 grub 默认，reboot 即回。产物 R75 37 文件/395KB；台账 §111；INDEX R75。** |
 | E3-CD | 2026-11-12 | **定位 a/c/d 的 2048：GPU 段注册路径（只换运行时库 + 抓 dmesg）** | 已关闭（回执已收；4090D 无 P2P 硬阻塞，a/c 物理不可达；d 可救） | ①只读指纹：node1/node4 bench ldd 的 liburma 解析+md5、RPATH、找 netlab lib（36b0ab10）；②a 1/1 100-key 10s 冒烟抓 dmesg 前后 + `is_gpu_seg=` 日志行；③进程级 LD_LIBRARY_PATH netlab lib A/B。不编译/装驱动/rmmod/重启/改 grub；node2/4 只读。产物 R77 + 台账 §113 + INDEX + 五段式回执。**2026-11-12 回执：2048 两层叠加。①运行时库：node1 RPATH 指的 UMDK_netlab/lib 目录不存在 → ldd 落 /usr/lib64 老版（5c021f7f，is_gpu_seg 0）→ 普通 pin_user_pages_fast（-14/-12）。②GPU P2P：换 netlab 库（36b0ab10，is_gpu_seg=1，日志行证明二进制 OK）后正确进 bridge P2P，但 nvidia_p2p_get_pages 返回 -22 EINVAL；ABAB 四轮复现；nvidia-smi Peer Type N/A、topo GPU↔NIC 全 SYS。判定命中§三第 2 行：4090D GeForce 无 PCIe P2P，a/c 直写物理不可达（对照 node4 V100 可用）。已停手，未改内核/编译/kill；node4 只读；服务保持 E3-CB 终态。** **指挥侧源码复核：d 与 a/c 不同——staging 数据面 NIC 不碰 GPU，物理不需 P2P；被挡是 bench EnsureNofPools（stress_cluster_bench.cpp:1971/1993/2021）在 staging 下仍把 GPU 整池注册到 NoF（→-2048→return false），该注册只对 GDS 必要。host 暂存池由 real_client:4227/5967 独立注册（E3-N，不受 bench flag 影响）；UB staging 走 registerLogicalDeviceRegion（ub_transport.cpp:502，逻辑注册）→ b 能通的原因。零代码改动解法：d 跑 --nof_whole_pool_register=false（或 MC_NOF_WHOLE_POOL_REGISTER=0）跳过 GPU 注册；启动闸门 NofGpuLayoutSupported(4MB,128KB,32MB,false) 全 64KiB 对齐通过。待 E3-CE 冒烟实证（已派）。** |
 | E3-CE | 2026-11-12 | **node1/3：d staging 冒烟（`--nof_whole_pool_register=false` 跳过 GPU 整池注册）** | 已完成（回执已收；d 零代码改动打通） | 承接 E3-CD：a/c 物理不可达不碰；d 是 staging 不需 P2P，被 bench EnsureNofPools 多余 GPU 注册挡住，零代码改动可解。主臂 A：沿用 R75 d 1/1 100-key 冒烟命令+env，唯一加 `--nof_whole_pool_register=false`，开 timing，2×10s；判据 failed=0 + cuda_io=0 + host_io>0 + effective_path=nof/staging + 恒等式闭合。对照臂 B：同 A + 进程级 LD_LIBRARY_PATH=/home/yin/gdr/UMDK_netlab/lib（sudo 下 ldd 复核），1×10s，证库无关。A/B 都不通就抓日志+dmesg 停并回报，不猜/不改源码。不改源码/编译/装驱动/rmmod/重启/grub//usr/lib64/全局 symlink；不 kill 他人；node2/4 不碰；不修 lib 路径/不跑 a/c/16 并发/8MB/全量；进程级 flag/env 无持久改动。产物 `第二组测试环境/E3-CE_d_staging_flag_20261112/`、本地 `node1&3测试\`、台账§114、INDEX R78、五段式回执；10–15 min。**2026-11-12 回执：d 零代码改动打通。A（flag=false 老库）2×10s + B（flag=false netlab 库）1×10s，3 轮 failed=0、6.33–6.35 GiB/s。计数器 cuda_io=0/host_io>0/accelerator=0/dmabuf=0/peer_memory=0/gds 0 次 → 确凿 host staging；恒等式 −1.00/−1.01/−1.10 闭合。effective_path=nof/urma/cuda-domain 与 nof/staging 等价（指挥侧核实 stress_cluster_bench.cpp:2759-2762：NoF+use_gpu_buffer 一律打此粗标签，不分 staging/GDS；规格预期名写错，路径以计数器为准）。数据：get 334.5/335.8/338.8、scatter 174、copy_us 170.6/171.0（4090D PCIe4.0≈V100 336 一半）、total 509.7/511.3/514.4、Avg 617/614.7（含 query~107）、P50 483/491。A≈B（差≤1.2µs）→ 与库无关。get 335 高于 node2 176 因 node3 strip64+2N0+3N2；若改 strip128+全N0 d 有望 ~460µs（后续）。风险：首跑脚本 bug（sudo $HOME=/root）改绝对路径修复；yin cmake -j308 偶占 1 核（单核 9%/全机 0.03%）按阈值不停手、绑 N0、未 kill；段端点 :13550。零变更自检通过，仅进程级 flag/env 无需回退。未跑 a/c/16 并发/8MB/全量、未做永久 lib 改动。** |
-| E3-CM | 2026-11-12 | **node1/3：第二组正式 1/1（log 静音 + a 双峰归因 + 四场景 clean + 拆解），优先保 1/1** | 待执行 | 承接 E3-CL（全 N0+strip128 固化、冒烟 d transfer 181.9/c 334、223k keys 在跑）。用户优先 1/1+拆解，其余明天。两问题定因：①日志噪声→全程 MC_HIFREQ_LOG_SAMPLE_RATE=0（默认 1.0 每请求打；=0 静默文本，PerfPoint 拆解不受影响）②a 双峰→最可能日志噪声（segment 0MiB 是 global_segment_size=0 假告警，段 36% 无 eviction），关日志跑 a 1/1 验证，hard_pin 先不加。①前置复用 env+确认 log=0 拆解仍输出②a 1/1 关日志 30s 验双峰消失（仍双峰停查 eviction）③**1/1 四场景 clean×3×60s 全分位+计数器+iostat（优先）**④1/1 拆解 timing×3×60s PerfPoint 聚合+恒等式（优先）⑤md+对照第一组+环境/keys 留明天。只跑 1/1+拆解；log=0/不 kill 同事/node2/4 不碰/不重启/shim 进程级。产物 `第二组测试环境/E3-CM_1to1_clean_20261112/`、本地 `node1&3测试\`、台账§123、INDEX R86、五段式回执；~30min。 |
+| E3-CM | 2026-11-12 | **node1/3：第二组 4MB 顺序读全量（自主连跑：解决问题→1/1+拆解记录→其余 12 格）** | 待执行 | 用户下班要自主连跑不停。承接 E3-CL（全 N0+strip128、223k keys 在跑）。①解决问题：全程 MC_HIFREQ_LOG_SAMPLE_RATE=0（PerfPoint 拆解不受影响）；a 双峰关日志验证，仍双峰加 hard_pin 对照，仍未定因记录 caveat 继续②**4MB 1/1 四场景 clean×3×60s + 1/1 拆解×3×60s，结束立即写盘（优先保住）**③其余 12 格（1/16→16/1→16/16×a/b/c/d）clean×3×60s，1/16/16/1 sleep50，16/16 延迟不可对外只记吞吐④完整 16 格 md+xlsx+对照第一组。必带 shim+hook+UMDK lib、NoF capsule=urma+4457、c reg_mode=peer、d flag=false、log=0。自主原则：非阻塞记录后继续、单格 failed 重试 1 次后跳过、环境崩重启 1 次不行才停、需重启停并回报（硬闸门）。不 kill 同事/node2/4 不碰/shim 进程级/源码不改。产物 `第二组测试环境/E3-CM_4mb_full_20261112/`+`第二组测试结果/`xlsx+md、本地 `node1&3测试\`、台账§123、INDEX R86、五段式回执；~1.5–2h 无人值守。 |
 | E3-CL | 2026-11-12 | **node1/3：换全 N0+strip128 盘组 → 冒烟验 transfer → 正式 1/1（四场景 clean + 拆解）** | 已完成（盘组+冒烟通过；正式 1/1 转 E3-CM） | 用户：现状盘组 c/d transfer~335 太高必须换；独占 node1/3；换全 N0（21,22,28,29,2a）+strip128（第一组证 transfer~176）；**换完先冒烟验 transfer 降了再正式 1/1**；1/16/16/1/16/16 明天。正式口径 4MB、a/b 3000/c/d 220k fresh、warmup45、1/1 sleep0、clean sample0、3×60s。必带 shim+hook+UMDK lib，NoF capsule=urma+4457，c reg_mode=peer，d flag=false。①前置+N0 盘归属盘点（destructive 前记录，同事活跃数据先回报）②换盘组（停 target→旧盘回 nvme→N0 绑 vfio→RAID0 strip128→4457→target/master/client）③预填 a/b 3000+c/d 220k（strip 变旧 keys 作废）④**冒烟 gate：d 1/1 10s transfer~176 才进正式，仍 300+ 停并回报**+c 冒烟 cuda_io>0⑤1/1 clean 四场景×3×60s 全分位+计数器+iostat（ops/req=32）⑥1/1 拆解 timing×2×60s 恒等式⑦md+对照第一组（a424.84/b531.60/c476.45/d634.65）+环境/keys 留明天。独占换盘 destructive 前记录/不 kill 不明/node2/4 不碰/不重启（硬闸门）/shim 进程级。产物 `第二组测试环境/E3-CL_n0strip128_1to1_20261112/`、本地 `node1&3测试\`、台账§122、INDEX R85、五段式回执；~55–65min。**2026-11-12 回执：盘组换全 N0（21/22/28/29/2a NUMA0）+strip128 5/5 online 38.4TB；target 905101 e7440ae0:4457、master 907775、client 908458；预填 a/b 3000(13s)+c/d 220k(528s) failed=0。冒烟精确命中：d transfer 336.8→181.9(−46%)、scatter 175 不变、Avg 627→475(−24%)、P99 991→487、6.23→8.22GiB/s；c cuda_io 957504 GDS 仍通、Avg 454.77→334.31、8.59→11.68GiB/s。正式 clean 暂停两问题：①日志噪声（MC_HIFREQ_LOG_SAMPLE_RATE 默认 1.0，a 30s 169MB/5.6MB/s）②a 双峰（63.8%~274+34.6%~1310；segment 0MiB 是 global_segment_size=0 假告警，段 36% 无 eviction，疑日志噪声）。指挥定因：log=0 静默（PerfPoint 拆解不受影响）+关日志验 a 双峰，转 E3-CM。环境/223k keys 保留明天，旧盘组归档可回退。** |
 | E3-CK | 2026-11-12 | **node1/3：修 c（NoF GDS）——NofCudaPin context 回退补丁 + 验证** | 已完成（回执已收；c 修通，四场景齐冒烟级） | 承接 E3-CJ（c 根因锁定：NofCudaPin cuPointerGetAttribute rc=0 但 ctx=NULL，hook 显存无 CUDA context 簿记；reg_mode=peer 唯一阻塞是 pin context 查询）。修法：rc==SUCCESS&&ctx==NULL 回退 cuCtxGetCurrent（仅影响已失败分支，a/b/d/V100 零影响）。①探针（nvcc 小程序带 hook，不重编）：确认 pointer ctx=NULL/current ctx 有效/cuMemGetAddressRange 可取 base/size；③不成立停并回报②最小补丁 nof_memory_domain.cpp NofCudaPin 一处+重编 node1 bench（diff base64+md5 回传指挥）③c 1/1 100-key 10s 带 hook+MC_NOF_GPU_REG_MODE=peer+capsule=urma，gate register 成功+failed=0+cuda_io>0；a/b/d 回归。三级回退；仅改一处；不 kill 同事/node2/4 不碰/重启硬闸门/不重启；只冒烟。产物 `第二组测试环境/E3-CK_c_pin_fix_20261112/`、本地 `node1&3测试\`、台账§121、INDEX R84、五段式回执；40–60min。**2026-11-12 回执：c 修通，四场景齐（冒烟级）。a 275.78µs/14.16GiB/s、b 381.81/10.23、c 454.77/8.59（cuda_io=703904、peer_memory=1、staged_bytes=0、failures=0 真 GDS 直写）、d 627.19/6.23（host_io=510432）。探针证实 ctx=NULL 是 CUDA VMM 固有语义（与 hook 无关，普通 cuMemAlloc 非空）→ 通用修复（PyTorch VMM 同坑）。偏差：node1 我方源码丢失→测试侧用 LD_PRELOAD shim 劫持 cuPointerGetAttribute 回退 current ctx（同语义，bench md5 未动），证据完整（register success/whole-pool/703904 I/O 全成功/staged_bytes=0；a/b/d shim_lines=0 未触发、偏差−0.2~−1.3%）；shim 进程级临时非产品修复。指挥裁决：接受 shim 作冒烟结论，不复制 yin 11/12 树（不同源不可比）；补丁已合入本地 repos/Mooncake 归档 patches/E3-CK/nofcudapin_ctx_fallback.patch（md5 768d287a…，apply --check 过），待同源重编最终验证。yin mooncake-fallback-930（PID 769296）是 staging fallback 无关，未碰。下一步：正式全量+补丁重编另派。** |
 | E3-CJ | 2026-11-12 | **node1/3：Mooncake a/c 带 hook 冒烟 + b/d 回归（四场景收口）** | 已完成（回执已收；a/b/d 通，c 阻；a GDR 突破） | 承接 E3-CG（SPDK peermem 通，c 命门过）；用户首要目标=四场景，条件具备。带入三发现：SPDK_URMA_CAPSULE_TRANSPORT=urma 必需；Mooncake 4MB 靠 128KB chunk 不受 URMA 单 IO 1MB 限；-M 是 urma_perf 语义 Mooncake 用 --gpu_mode。hook 必带（LD_PRELOAD+LD_LIBRARY_PATH，maps 确认）。①前置（独占复查/盘归属沿用 2a+91,92,a2,a3 strip64/hugepages 7168）②重建 node3 target/master/client+memory 段+NoF 注册 4457③预填 a/b memory 100+c/d NoF 100 keys④**四场景 1/1 100-key 10s 带 hook：a/c gdr-peermem gate register 成功+failed=0+cuda_io>0；b/d staging 回归（d flag=false）**⑤a/c 失败抓 [gdr-geforce] 行/maps 看 hook 生效否，停并回报。不 kill 同事/盘只绑我方/node2/4 不碰/重启硬闸门/hook 进程级；只冒烟不跑全量。产物 `第二组测试环境/E3-CJ_mooncake_ac_20261112/`、本地 `node1&3测试\`、台账§120、INDEX R83、五段式回执；40–50min。**2026-11-12 回执：3 通 1 阻。a✅ ub/gdr-peermem、register success、is_gpu_seg=1、failed=0、avg 277.68µs/14.06GiB/s（比 staging 快 27%，GDR 突破）；cuda_io=0 属正常（该计数器 NoF-only，stress_cluster_bench.cpp:3338，a 走 UB；指挥确认口径）。b✅ avg 382.59（+1.5%）；d✅ cuda_io=0/host_io=503840/avg 635.39。c❌ 注册中止：NofCudaPin cuPointerGetAttribute rc=0(SUCCESS) 但 ctx=NULL（hook 直连 RM 建显存无 CUDA context 簿记）→-EIO（nof_memory_domain.cpp:50-55，指挥核实）；reg_mode=peer 跳过 dmabuf，唯一阻塞是 pin context 查询；UB 不查 CUDA 属性故 a 通。修两环境坑：NoF -104=旧 target c966dca4 与 bench SPDK 11/03 握手结构不符，换 e7440ae0 通；-O 4194304 须配 -I 8192,8192,1024,4194304。环境暂不还原（查 c）。下一步 E3-CK NofCudaPin context 回退补丁。** |
@@ -5665,11 +5665,13 @@ lsmod | grep -E 'nvidia|gdrdrv' 2>&1
 
 ---
 
-# E3-CM（待执行 · 2026-11-12）· node1/3：第二组正式 1/1（log 静音 + a 双峰归因 + 四场景 clean + 拆解），优先保 1/1
+# E3-CM（待执行 · 2026-11-12）· node1/3：第二组 4MB 顺序读全量（自主连跑：解决问题 → 1/1+拆解记录 → 其余 12 格）
 
-> **承接 E3-CL**：全 N0+strip128 已固化、冒烟通过（d transfer 181.9、c 334）、223k keys 在跑。**用户优先级：先拿 1/1 + 1/1 拆解（最重要），其余 12 格明天。**
-> **两问题指挥已定因（核源码）**：① 日志噪声 → **全程 `MC_HIFREQ_LOG_SAMPLE_RATE=0`**（代码默认 1.0 每请求打 breakdown；=0 静默文本日志，**PerfPoint 打点/全量聚合拆解不受影响**，ERROR/WARNING 照常；mooncake_logging.cpp:45 + docs/yh/log-reference.md §8.6）。② a 双峰 → 最可能日志 I/O 噪声（"segment 0 MiB" 是 --global_segment_size=0 假告警，实际段 36% 无 eviction）；**关日志跑 a 1/1 验证双峰消失即可，hard_pin 先不加**（关日志后仍双峰再查 eviction）。
-> **必带**：shim（ctx 回退）+ GeForce hook + UMDK lib；NoF `SPDK_URMA_CAPSULE_TRANSPORT=urma`+`MC_NOF_PORT=4457`；c `MC_NOF_GPU_REG_MODE=peer`；d `--nof_whole_pool_register=false`；**所有臂 `MC_HIFREQ_LOG_SAMPLE_RATE=0`**。
+> **用户下班，要测试 Agent 自主连跑、不要停**：① 先解决问题（日志噪声/a 双峰）→ ② **4MB 1/1 四场景 clean + 1/1 拆解，先记录落盘**（最重要，先保住）→ ③ 再跑其余全量（1/16、16/1、16/16）→ ④ 记录完整 16 格。
+> **承接 E3-CL**：全 N0+strip128 固化、冒烟通过（d transfer 181.9、c 334）、223k keys 在跑（a/b 3000+c/d 220k），不重灌。
+> **两问题指挥已定因（核源码）**：① 日志噪声 → **全程 `MC_HIFREQ_LOG_SAMPLE_RATE=0`**（代码默认 1.0 每请求打 breakdown；=0 静默文本日志，**PerfPoint 打点/全量聚合拆解不受影响**，ERROR/WARNING 照常；mooncake_logging.cpp:45 + docs/yh/log-reference.md §8.6）。② a 双峰 → 最可能日志 I/O 噪声（"segment 0 MiB" 是 --global_segment_size=0 假告警，bench:3307；实际段 32GiB/3000keys 仅 36% 无 eviction）。
+> **自主原则（无人值守）**：非阻塞问题**记录后继续**，不永久停；单格 failed>0 重试 1 次仍失败则记该格失败、跳下一格；环境崩（target 死）尝试重启 1 次，不行才停并回报；**需重启则停并回报（硬闸门）**。**1/1 数据在阶段二结束立即写盘**，后续即使中断也已保住。
+> **必带（所有臂）**：shim（ctx 回退）+ GeForce hook + UMDK lib；NoF `SPDK_URMA_CAPSULE_TRANSPORT=urma`+`MC_NOF_PORT=4457`；c `MC_NOF_GPU_REG_MODE=peer`；d `--nof_whole_pool_register=false`；`MC_HIFREQ_LOG_SAMPLE_RATE=0`。
 
 ## 〇、前置
 
@@ -5677,39 +5679,41 @@ lsmod | grep -E 'nvidia|gdrdrv' 2>&1
 - 确认 `MC_HIFREQ_LOG_SAMPLE_RATE=0` 生效；shim/hook md5；**跑前确认 breakdown 全量聚合仍输出**（PerfPoint 不受采样影响）。
 - 回退基线：grub 默认原厂、运行 6.6.0-gdr_e3cf；不重启（硬闸门）。
 
-## 一、a 双峰归因（先做，~2min）
+## 一、解决问题：a 双峰归因（~5min）
 
-- **a 1/1 关日志（=0）跑 30s**，看时延分布：
-  - **单峰 ~274µs**（双峰消失）→ 归因日志噪声，进二。
-  - **仍双峰（~1310µs 占 1/3）**→ 停并回报，再查 eviction（届时试 `--hard_pin=true` 对照），不继续。
+- **a 1/1 关日志（=0）跑 30s**，看分布：
+  - 单峰 ~274µs（双峰消失）→ 归因日志噪声，进二。
+  - 仍双峰 → **加 `--hard_pin=true` 再跑 a 1/1 30s 对照**：消失→a 用 hard_pin（记录）；仍双峰→**记录"a 双峰未定因"caveat，继续**（不永久停，a 数标注双峰）。
 
-## 二、1/1 干净表（四场景 × 3×60s，sample=0，log=0）【优先交付】
+## 二、4MB 1/1 clean + 拆解【优先，结束立即写盘】
 
-- a（gdr-peermem memory）、b（staging memory）、c（gdr-peermem NoF）、d（staging NoF flag=false）；1/1 sleep0、warmup45、start0。
-- 每格 **avg/P50/P90/P99/P99.9/Pmax + GiB/s + keys/s**、路径计数器（a/c ub/gdr-peermem 或 cuda_io；b/d host_io）、failed、iostat（Raid0 ops/req=32、5 盘分布）。3 轮均值+极差；异常轮保留。
+- **1/1 clean**：a/b/c/d × **3×60s**（sample=0、log=0、1/1 sleep0、warmup45、start0）。每格 avg/P50/P90/P99/P99.9/Pmax + GiB/s + keys/s、路径计数器（a/c ub/gdr-peermem 或 cuda_io；b/d host_io）、failed、iostat（Raid0 ops/req=32、5 盘分布）。3 轮均值+极差。
+- **1/1 拆解**：a/b/c/d × **3×60s** timing（STAGING_TIMING+PATH_TIMING，log=0，PerfPoint 聚合）。a/b query/read/total；c/d +transfer/submit/wait/copy；恒等式。timing 与 clean 分开标注。
+- **立即记录**：写第二组 1/1 结果 md + xlsx 1/1 行（先备份），对照第一组第七次 a424.84/b531.60/c476.45/d634.65。**这一步落盘后才进三。**
 
-## 三、1/1 拆解（四场景 timing，3×60s，log=0）【优先交付】
+## 三、其余 12 格全量（1/16、16/1、16/16 × a/b/c/d）
 
-- 开 `MC_BENCH_STAGING_TIMING`+`PATH_TIMING`；**拆解走 PerfPoint 全量聚合（log=0 不影响）**。
-- a/b query/read/total；c/d +transfer/submit/wait/copy；恒等式闭合。**timing 与 clean 分开标注**。
+- 顺序 **1/16 → 16/1 → 16/16**；每格 **3×60s** clean（sample=0、log=0）；**1/16/16/1 sleep50**（方案 A）；warmup45、start0。
+- 每格 avg/P50/P90/P99/P99.9/Pmax + GiB/s + keys/s + 计数器 + failed + iostat。
+- **16/16 延迟是排队时长，不可对外，只记吞吐**（沿用第一组口径）；P9999 查询数<10000 标不可用。
+- 单格 failed>0 重试 1 次，仍失败记该格失败跳下一格；异常轮保留。
 
 ## 四、记录 / 收尾
 
-- 第二组 1/1 结果 md（clean 表 + 拆解 + 对照第一组第七次 a424.84/b531.60/c476.45/d634.65）；标注全 N0+strip128、PCIe4.0、shim/hook、log=0、noiommu。
-- **环境 + 223k keys 保留**（明天续 12 格）；回执写明天复用状态。
-- 本轮**只跑 1/1 + 拆解，不跑 1/16/16/1/16/16、不跑 8MB**。
+- 完整 16 格 md + xlsx（第二组表，先备份/记前后 md5/回读）+ 1/1 拆解 + 对照第一组第七次 16 格；标注全 N0+strip128、PCIe4.0、shim/hook、log=0、noiommu、a 双峰处置。
+- 环境 + 223k keys 保留；回执写最终状态（PID/keys/strip/盘组）。
 
 ## 五、约束 / 回退
 
-- 全程 MC_HIFREQ_LOG_SAMPLE_RATE=0；不 kill 同事；node2/4 不碰；不重启（硬闸门）；shim/hook 进程级不改系统库；源码不改。
-- a 双峰未归因前不报 a clean 数；hard_pin 仅在关日志后仍双峰时作对照。
+- 全程 MC_HIFREQ_LOG_SAMPLE_RATE=0；不 kill 同事；node2/4 不碰；**需重启停并回报（硬闸门）**；shim/hook 进程级不改系统库；源码不改。
+- 自主连跑：非阻塞记录后继续；1/1 先落盘；单格失败重试 1 次后跳过；环境崩重启 1 次不行才停。
 
 ## 六、产物 / 回执
 
-- 测试侧 `测试相关资料/第二组测试环境/E3-CM_1to1_clean_20261112/`；本地 `D:\gds性能\node1&3测试\`。
+- 测试侧 `测试相关资料/第二组测试环境/E3-CM_4mb_full_20261112/`；本地 `D:\gds性能\node1&3测试\`；第二组 xlsx + 结果 md（`测试相关资料/第二组测试结果/`）。
 - 台账 §123；INDEX R86；五段式回执。
-- 必须给：独占判定；log=0 生效+拆解仍输出确认；**a 双峰归因（关日志后分布）**；四场景 1/1 clean 全分位+GiB/s+计数器；1/1 拆解+恒等式；对照第一组；明天复用状态。
-- 预计 **~30 min**（a 归因 2 + clean 12 + 拆解 9 + 记录 5，log=0 无写盘开销）；**今晚必出 1/1 + 拆解**。
+- 必须给：独占判定；log=0+拆解输出确认；a 双峰归因/处置；**1/1 四场景 clean 全分位+拆解+恒等式**；**16 格全表（avg/分位/GiB/s）**；对照第一组；异常格/失败格清单；环境最终状态。
+- 预计 **~1.5–2 h**（归因 5 + 1/1 clean 12 + 拆解 9 + 12 格 36 + 记录 15 + 启动/预热开销）；**无人值守连跑，1/1 先落盘**。
 
 ---
 
