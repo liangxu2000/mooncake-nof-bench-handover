@@ -5485,6 +5485,8 @@ who; ps -eo pid,user,comm,args | grep -E 'mooncake|nvmf|spdk|docker' | grep -v g
 
 # E3-CA（待执行 · 2026-11-11）· 只读核查：netlab 内核 nvidia 模块 vs 现成 GDR 模块符号匹配
 
+> **2026-11-12 用户确认：node1/node3 目前我们独占。** 重启窗口可由我们安排，不再需要同事协调；但仍必须先核实无他人进程/端口、保留原内核回退、记录 PID/端口/环境变更。E3-CA 仍按只读执行，结果决定是否直接切 netlab。
+
 > E3-BZ 的“硬阻塞”是：当前基座内核运行驱动 575.64.05，而现成 GDR udma/bridge 按 575.57.08 编。**但切到 netlab 内核后，用的是 netlab 内核自己的 nvidia 模块**；如果它是 575.57.08，现成模块就匹配，阻塞可能不存在。
 > 本任务只读，不编译/不装/不 rmmod/不重启/不 kill/不改 grub；node2/4 不碰。
 
