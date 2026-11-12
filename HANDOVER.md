@@ -186,6 +186,7 @@
 | E3-BW | 2026-11-11 | **fresh 段 a/b 1/1 带 timing 3×60s，补 a/b 拆解** | 已完成（回执已收；b +2.39% 触发回报，xlsx 未动） | 用户要求：在 fresh memory 段上重跑 a/b 1/1 并开 timing，拿 query/read/total + b 的 transfer/submit/wait/copy。前置：E3-BU fresh 段（3000 keys/36.62%、pid 3843357/50156）仍在；变了就清空/重建+prefill 3000。①a 1/1、b 1/1 各 **3×60s**，开 `MC_BENCH_STAGING_TIMING` + `MC_BENCH_STAGING_PATH_TIMING`（a GDR、b staging）；4MB、warmup45、start0、sleep0；②每轮记 total/query/read；b 加 transfer/submit/wait/copy；恒等式；failed；③对照 E3-BU clean a424.84/b531.60、E3-BS 诊断 a422.13/b549.49；**timing 批与 clean 批可能有 ~5µs 差（d 是 630.29 vs 634.65），必须标注、不要混**；④结果写进结果 md 的 a/b 拆解；**xlsx 暂不动**，除非 timing total 与 xlsx 差 >2% 才回报；⑤不 kill 他人/不改源码。产物 R70 + 台账 §106 + INDEX + 五段式回执。**2026-11-11 回执：a 424.79（get_into）/430.12（bench），与 clean 424.84 几乎重合；b 544.30/548.67，比 clean 531.60 +12.70/+17.07（+2.39%），触发 2% 回报，xlsx 未动（md5 `536db86c`）。**三元分解：b 总差 +22.34 = timing 采样 +17.07 + 满段 +5.27；a 总差 +2.82 = timing +5.28 + 满段 −2.46（噪声）→ 原先“22 µs 全归满段”不完整；b 的 staging 每 IO 多 4 条 breakdown 日志，a 只多 1 条。b−a gap：R51 109.97→E3-BS 126.28→E3-BW 118.55→E3-BU 106.76。6 轮 failed=0；b 五分量与 E3-BS 逐项差 ≤0.7 µs；恒等式 −1.08/+4.36。建议：xlsx 不改（544.30 是 timing 口径；clean 等效 ≈527.2，与 531.60 差 −4.4 噪声内）；只改口径说明/结果 md 的三元分解。产物 R70 21 文件/48.65MB；台账 §106；INDEX R70。** |
 | E3-BX | 2026-11-11 | **只改口径 sheet 说明：a/b 偏差改为 timing+满段三元分解；Sheet1 数据不动** | 待执行 | 用户拍板“按口径差、不改表”结案。前置：xlsx 当前 md5 `536db86c`、Sheet1 a/b 1/1=424.84/531.60、口径 sheet R66/48。①备份、记录前 md5；②只改口径 sheet 的说明文字（A19/B19 或新增行）：a/b 1/1 取 clean 值 424.84/531.60；E3-BS 427.66/553.94 与 E3-BU 差 +2.82/+22.34，分解为 timing +5.28/+17.07、满段 −2.46（噪声）/+5.27；b +22 µs 主要是 timing（staging 每 IO 多 4 条日志），a 满段≈0；E3-BW b 544.30 是 timing 口径，clean 等效≈527.2，不写入表；③**Sheet1 数据格一律不动**；④测试侧结果 md 若已按三元分解则不改，若仍有“22 µs 全归满段”则修正；⑤回读、记录后 md5。不改源码/不 kill/不跑测试。产物 R71 + 台账 §107 + INDEX + 五段式回执。 |
 | E3-BY | 2026-11-11 | **只读预检：node1/node3 现状 vs 同事 GDR 内核文档**（不编译/不重启/不改环境） | 已完成（只读预检；回执已收；4 项待拍板） | 目标：确认“换内核”方案的现场缺口，输出文档要求 vs 现场对照表。node1 检查：`arch`、`uname -r`、OS、`rpm -q libummu-devel libummu`、`/usr/src/nvidia-*`（`nvidia/nv-p2p.h`、`Module.symvers`、驱动版本 575.64.05 vs 文档 575.57.08）、`modinfo udma`/`lsmod`（262144 vs 270336、udma_nv_p2p_bridge）、`ls /dev/uburma`、`grubby --default-kernel`/`--info=ALL`、`/boot`/`/lib/modules`、gcc/make/git/cmake、磁盘空间、已有 GDR 构建产物（`reload_urma.sh`/`collector_urma.sh`）、同事进程/端口（重启影响）。node3 检查：`arch`、`uname -r`、OS、`libummu`、`lsmod`/`modinfo udma`、`/dev/uburma`、target/master PID/端口/库路径、盘/vfio/hugepages、同事进程；判断只需 UMDK 用户态还是也要同步内核模块。**只读；不 sudo 写、不编译、不重启、不 rmmod、不 kill、不碰 node2/4**；拿不到的项标缺口。产物 R72 + 台账 §108 + INDEX + 五段式回执。**2026-11-11 回执：两节点 arch=aarch64、内核基座 6.6.0-159.4.2.153… 同、libummu 1.0.5-1、UMDK 26.06.0-B020 两节点同 md5；缺 udma 270336+bridge（当前 262144 stub；netlab 内核 udma.ko 11,457,808B 未加载、无 bridge）。已装 6.6.0-netlab_pcie_ub_compat+（grub index=0，非默认），是否是文档 GDR 内核待同事确认。NVIDIA 源码只有 575.57.08（symvers root 600），运行驱动 575.64.05，不匹配。node1 /boot 243M 偏紧；node3 liburma.so.0 指向 .bak_corrupt（264,576B），需修。node1 15+ 会话/他人 master 9008/50058/docker；node3 12 盘 vfio + 他人 target/master；维护窗口需协调。4 项待拍板：①udma 编 575.57.08 还是 575.64.05；②netlab 内核是否即 GDR 内核；③维护窗口谁协调；④node3 liburma symlink 是否改回 .so.0.0.3。产物 R72 9 文件/40KB；台账 §108；INDEX R72。** |
+| E3-BZ | 2026-11-11 | **GDR 内核方案只读核查（二）：netlab 内核是否可复用、NVIDIA 源码版本、node3 库链、node1 /boot** | 待执行 | 承接 E3-BY。①**netlab 内核**：`grubby --info=ALL`；`ls /lib/modules/6.6.0-netlab_pcie_ub_compat+/build`；`grep ummu_sva_matt_map_phys_sg /lib/modules/.../build/Module.symvers`；`modinfo /lib/modules/.../udma.ko`（version/vermagic/depends/srcversion）；找 `udma_nv_p2p_bridge.ko`、查 `modules.dep`/`depmod -n`；`grep -E 'UMMU|NV_P2P|GDR' /boot/config-6.6.0-netlab*`；`ls /boot/*netlab*`。②**NVIDIA**：`ls /usr/src/nvidia-*`、`nvidia-smi` 驱动版本、`dkms status`；确认是否有 **575.64.05** 的 `nv-p2p.h`/`Module.symvers`；只有 575.57.08 时记录缺口，不编译。③**node3 库链**：`ls -l /usr/lib64/liburma*`、`readlink -f`、md5；运行中 target/master 的 `LD_LIBRARY_PATH`/`/proc/<pid>/maps`；`git/cmake` 版本；12 块 vfio 盘属主/进程。④**node1 /boot**：`df -h /boot`、`ls /boot`、旧内核/rescue、`dracut`/initramfs 工具、docker 容器/同事进程。**只读；不编译/不装/不 rmmod/不重启/不 kill/不改 grub**；node2/4 不碰。产物 R73 + 台账 §109 + INDEX + 五段式回执。 |
 
 ---
 
@@ -5406,4 +5407,75 @@ grep -E 'HugePages_Total|HugePages_Free' /proc/meminfo
 - 拿不到/权限不足的项标“缺口”，不猜。
 - 产物：`测试相关资料/第二组测试环境/E3-BY_precheck_20261111/`；台账 §108；INDEX R72；五段式回执。
 - 必须给：文档要求 vs 现场对照表、node1/node3 原始命令输出、缺口清单、下一步建议（编译方案/维护窗口/是否需要 x86 分支）。
+- 预计 **10–15 分钟**。
+
+---
+
+# E3-BZ（待执行 · 2026-11-11）· GDR 内核方案只读核查（二）
+
+> 承接 E3-BY：基座已就位，缺 udma 270336 + bridge；有 netlab 内核、NVIDIA 源码版本、node3 库链、node1 /boot 四个未知。
+> **全部只读**：不编译、不安装、不 rmmod、不重启、不 kill、不改 grub；node2/4 不碰。
+
+## 一、netlab 内核是否可复用
+
+```bash
+grubby --info=ALL
+ls /lib/modules/6.6.0-netlab_pcie_ub_compat+/build 2>&1
+grep ummu_sva_matt_map_phys_sg /lib/modules/6.6.0-netlab_pcie_ub_compat+/build/Module.symvers 2>&1
+find /lib/modules/6.6.0-netlab_pcie_ub_compat+ -name 'udma*.ko*' -o -name 'udma_nv_p2p_bridge*.ko*'
+modinfo /lib/modules/6.6.0-netlab_pcie_ub_compat+/kernel/drivers/ub/urma/hw/udma/udma.ko 2>&1
+grep -E 'UMMU|NV_P2P|GDR' /boot/config-6.6.0-netlab* 2>&1
+ls -lh /boot/*netlab* 2>&1
+```
+
+- 重点：netlab 内核是否有 `ummu_sva_matt_map_phys_sg`；`udma.ko` 的 `version`/`vermagic`/`depends`/`srcversion`；是否有 `udma_nv_p2p_bridge.ko` 或 modules.dep 引用。
+- 如果 netlab 内核已含 GDR/ummu 符号且 udma 是 270336，只是缺 bridge，则可能只需补 bridge/URMA 模块，不必全量编内核；如果缺符号或不是 270336，走文档全量编内核。
+
+## 二、NVIDIA 源码版本
+
+```bash
+ls -d /usr/src/nvidia-* 2>/dev/null
+for d in /usr/src/nvidia-*; do echo "== $d"; ls "$d/nvidia/nv-p2p.h" "$d/Module.symvers" 2>&1; done
+nvidia-smi --query-gpu=driver_version --format=csv,noheader
+dkms status 2>&1
+```
+
+- 确认有没有 **575.64.05**（实际运行驱动）的 `nv-p2p.h` + `Module.symvers`；只有 575.57.08 时记录缺口，不编译、不猜。
+- 结论只写：可用的源码版本、与运行驱动是否一致、缺哪个包。
+
+## 三、node3 库链 / 运行进程
+
+```bash
+ls -l /usr/lib64/liburma* 2>&1; readlink -f /usr/lib64/liburma.so.0 2>&1
+md5sum /usr/lib64/liburma.so.0* 2>&1
+# 运行中 target/master 的库路径（只读）
+for p in $(pgrep -f 'nvmf_tgt|mooncake_master|mooncake_client' | head -n 20); do
+  echo "== $p $(ps -p $p -o comm=)"; tr '\0' '\n' < /proc/$p/environ 2>/dev/null | grep -E 'LD_LIBRARY_PATH'; grep -E 'liburma' /proc/$p/maps 2>/dev/null | head;
+done
+git --version; cmake --version | head -n1
+# 12 块 vfio 盘的属主（不操作）
+ls -l /sys/bus/pci/devices/0000:*/driver 2>/dev/null | grep -E 'vfio|nvme'
+```
+
+- 重点：`liburma.so.0` 的坏 symlink 链、真实文件/md5；运行进程是否靠 `LD_LIBRARY_PATH` 绕开；如果修 symlink，会影响哪些进程。
+- node3 的 git/cmake 版本；12 块 vfio 盘当前属主（不碰）。
+
+## 四、node1 /boot 与占用
+
+```bash
+df -h /boot; ls -lh /boot
+ls /boot | grep -E 'vmlinuz|initramfs|rescue'
+which dracut; dracut --version 2>&1 | head -n1
+docker ps 2>/dev/null | head -n 20
+who; ps -eo pid,user,comm,args | grep -E 'mooncake|nvmf|spdk|docker' | grep -v grep
+```
+
+- 重点：/boot 243M 能腾出多少；netlab initramfs 118MB；旧内核/rescue 可否清理；重建 initramfs 的工具是否在。
+
+## 五、约束 / 产物
+
+- 只读；不写系统文件、不编译、不安装、不 rmmod、不重启、不 kill、不改 grub；node2/4 不碰。
+- 拿不到/权限不足的项标缺口，不猜。
+- 产物：`测试相关资料/第二组测试环境/E3-BZ_precheck2_20261111/`；台账 §109；INDEX R73；五段式回执。
+- 必须给：netlab 内核符号/udma modinfo/bridge 结果、NVIDIA 源码版本缺口、node3 库链与进程、node1 /boot 可用空间、对 4 项决策的建议。
 - 预计 **10–15 分钟**。
