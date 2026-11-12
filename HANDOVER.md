@@ -5653,6 +5653,7 @@ lsmod | grep -E 'nvidia|gdrdrv' 2>&1
 > **纠正 E3-CD 的"4090D 物理不可达"**：同事资料 `内核&测试.txt` 证明 4090D 有 P2P 路径——`libgdr_geforce_hook.so`（`NV50_THIRD_PARTY_P2P` 直接 RM 调用，绕过 `nvidia_p2p_get_pages`）+ BAR 扩容，`REGISTER_VIDMEM status=0` 注册成功。**但那次成功是 `-M posix`（host 暂存），资料明写"Peermem直接崩"——纯 peermem 直写（a/c 要用）未确认。本轮就是要把 peermem 这关验出来。**
 > **用户指令（重要）**：**不能用 netlab 内核**（无法用 bonding 设备，影响 node1/3 其他业务）；必须按 `D:\gds性能\node1&3测试\GDR编译部署_自维护仓库_20261111.md` 重编内核——重编内核 GDR/ummu 符号齐 + **bonding 可用**（文档 reload 输出 `bonding_dev_0 link ACTIVE`）。
 > 本任务分阶段、每阶段 gate，任一失败停并回报；**默认内核保持原厂基座（回退），自编译内核一次性启动**。
+> **⚠ 重启硬闸门（用户指令，2026-11-12）：node1/node3 任何一次 reboot 之前，测试 Agent 必须先停手、通过用户回报"即将重启哪台、为什么、预计多久、影响什么"，等用户确认（用户要先通知同事）后才能执行重启。未经用户确认严禁 reboot。编译/安装/取料等非重启步骤可先做，做到要重启那一步就停下等确认。**
 
 ## 〇、前置 / 回退基线（先做，记录全）
 
@@ -5700,6 +5701,7 @@ make -j$(nproc) && cd .. && ./collector.sh   # output/umdk-<commit>-aarch64-linu
 
 ## 四、重启进自编译内核 + 加载模块
 
+- **⚠ 重启前先停手回报用户、等确认（用户通知同事）——见顶部硬闸门。node1、node3 分别各确认一次；未确认不 reboot。**
 - node1/node3 各 `grub2-reboot <自编译内核>` 一次性启动 → `uname -r` 必须含 `-gdr_e3cf` → `grep ummu_sva_matt_map_phys_sg /lib/modules/$(uname -r)/build/Module.symvers` 有。
 - node1：`reload_urma.sh`（每次重启后手动）→ `nvidia-smi` 正常（若报错按文档装 `NVIDIA-Linux-aarch64-575.57.08.run`，**先回报再装**）→ `lsmod` udma **270336** + udma_nv_p2p_bridge。
 - node3（无 GPU）：加载 udma ko（**不加载 bridge/nvidia**）+ UMDK；重启 target/master/client。
@@ -5727,6 +5729,7 @@ make -j$(nproc) && cd .. && ./collector.sh   # output/umdk-<commit>-aarch64-linu
 ## 八、约束 / 回退
 
 - **默认内核保持原厂基座**（回退锚点）；自编译内核一次性启动；结束恢复 grub 默认。
+- **任何 reboot 前必须先停手回报用户、等用户确认（通知同事）后才执行**；node1/node3 分别确认；未确认严禁重启。
 - 不 kill 他人；独占窗口；node2/4 不碰；分阶段 gate，任一失败停并回报。
 - 编译产物/脚本不回传整文件，记 commit/md5/命令；源码改动（若有）按代码保管规则回传最小 diff。
 - 装 nvidia 驱动、改 grub 默认、BAR 扩容等高风险动作前先记录现状；nvidia 驱动安装先回报。
