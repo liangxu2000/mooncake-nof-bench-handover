@@ -193,6 +193,7 @@
 | E3-CE | 2026-11-12 | **node1/3：d staging 冒烟（`--nof_whole_pool_register=false` 跳过 GPU 整池注册）** | 已完成（回执已收；d 零代码改动打通） | 承接 E3-CD：a/c 物理不可达不碰；d 是 staging 不需 P2P，被 bench EnsureNofPools 多余 GPU 注册挡住，零代码改动可解。主臂 A：沿用 R75 d 1/1 100-key 冒烟命令+env，唯一加 `--nof_whole_pool_register=false`，开 timing，2×10s；判据 failed=0 + cuda_io=0 + host_io>0 + effective_path=nof/staging + 恒等式闭合。对照臂 B：同 A + 进程级 LD_LIBRARY_PATH=/home/yin/gdr/UMDK_netlab/lib（sudo 下 ldd 复核），1×10s，证库无关。A/B 都不通就抓日志+dmesg 停并回报，不猜/不改源码。不改源码/编译/装驱动/rmmod/重启/grub//usr/lib64/全局 symlink；不 kill 他人；node2/4 不碰；不修 lib 路径/不跑 a/c/16 并发/8MB/全量；进程级 flag/env 无持久改动。产物 `第二组测试环境/E3-CE_d_staging_flag_20261112/`、本地 `node1&3测试\`、台账§114、INDEX R78、五段式回执；10–15 min。**2026-11-12 回执：d 零代码改动打通。A（flag=false 老库）2×10s + B（flag=false netlab 库）1×10s，3 轮 failed=0、6.33–6.35 GiB/s。计数器 cuda_io=0/host_io>0/accelerator=0/dmabuf=0/peer_memory=0/gds 0 次 → 确凿 host staging；恒等式 −1.00/−1.01/−1.10 闭合。effective_path=nof/urma/cuda-domain 与 nof/staging 等价（指挥侧核实 stress_cluster_bench.cpp:2759-2762：NoF+use_gpu_buffer 一律打此粗标签，不分 staging/GDS；规格预期名写错，路径以计数器为准）。数据：get 334.5/335.8/338.8、scatter 174、copy_us 170.6/171.0（4090D PCIe4.0≈V100 336 一半）、total 509.7/511.3/514.4、Avg 617/614.7（含 query~107）、P50 483/491。A≈B（差≤1.2µs）→ 与库无关。get 335 高于 node2 176 因 node3 strip64+2N0+3N2；若改 strip128+全N0 d 有望 ~460µs（后续）。风险：首跑脚本 bug（sudo $HOME=/root）改绝对路径修复；yin cmake -j308 偶占 1 核（单核 9%/全机 0.03%）按阈值不停手、绑 N0、未 kill；段端点 :13550。零变更自检通过，仅进程级 flag/env 无需回退。未跑 a/c/16 并发/8MB/全量、未做永久 lib 改动。** |
 | E3-CF | 2026-11-12 | **node1/3：按自维护仓库重编 GDR 内核（bonding 兼容）+ UMDK + GeForce hook，验证 peermem GDR 连通** | 待执行 | 用户首要目标=四场景；指令：不用 netlab（缺 bonding 影响他人），按 `GDR编译部署_自维护仓库_20261111.md` 重编（HaoyuWang2001/kernel openEuler-24.03-LTS-SP4-gdr + umdk gdr）。纠正 E3-CD"物理不可达"：同事 `内核&测试.txt` 的 libgdr_geforce_hook.so（NV50_THIRD_PARTY_P2P）+BAR 扩容（resource1_resize=15）能在 4090D 注册 P2P（REGISTER_VIDMEM status=0），但那次是 -M posix，"Peermem直接崩"未确认。分阶段 gate：①前置/回退基线（默认内核=原厂基座）②取料（gitcode 走代理+同事 hook sudo 只读拷）③编内核本体（openeuler_defconfig+LOCALVERSION -gdr_e3cf+NV_P2P_HEADER_PATH=，查 ummu_sva_matt_map_phys_sg）④编 urma ko（NV_P2P_ROOT=575.57.08）+UMDK（BUILD_URMA=enable）+collector，部署 node1+node3⑤一次性重启进自编译内核+reload_urma.sh+nvidia-smi+udma 270336+bridge⑥BAR 扩容+hook⑦**核心 gate：urma_perftest write_lat_gpu --gpu-mode=peermem（udmac0d1e2+bonding_dev_0，node1↔node3）errors=0**⑧bonding ACTIVE 验证+SPDK -M peermem 诊断（txt 崩的那个）。默认内核保持基座（回退）；不 kill 他人；node2/4 不碰；装 nvidia 驱动先回报；本轮不跑 Mooncake a/c 全量（peermem 通后另派 E3-CG）。产物 `第二组测试环境/E3-CF_gdr_kernel_rebuild_20261112/`、本地 `node1&3测试\`、台账§116、INDEX R79、五段式回执；1.5–2h 分窗口。 |
 | E3-CC | 2026-11-12 | **node2/4：d 1/1 补测 4MB 随机读 + 8MB 顺序/随机读**（`--shuffle_seed`） | 已完成（回执已收；随机代价全在 NoF get_us、copy 不变；verify 旧限制已知） | 前置：node2/4 独占（他人进程 10 s Δ=0；load 7.7–7.9 / 13.0–15.4）；target = N0 组 21,22,28,29,2a + strip128 + 4457（脚本 md5 2556998a，与 E3-BS 同）；master=node2；220k 4MB keys 重灌 466 s（旧 keys 因 strip128 重排不可复用）；8MB 另灌 110k keys（同 880GB 工作集，`_vs` 隔离）。**结果（d 1/1，3 轮/臂）**：4MB 顺序 612.57 µs / 6.375 GiB/s，随机 777.58 / 5.023（avg +26.9%、P50 +34.7%）；8MB 顺序 1072.31 / 7.287，随机 1398.57 / 5.587（avg +30.4%、P50 +27.3%）。**代价全部在 get_us：4MB 169.5→382（+212.5）、8MB 289→589（+300）；copy 339.5→340、667→667 不变。** 每 MB 成本：4MB 153.1→194.4 µs/MB；8MB 134.0→174.8（8MB 比 4MB 便宜 ~12%）。4MB 顺序 612.57 vs E3-BS 630.29 = −2.8%（同窗口）；11 臂 failed=0、组内离散 ≤1.7%/≤1.1%、无回绕（4MB 76.8k–98.9k≪220k；8MB 42.8k–56.3k≪110k）；iostat 自洽（bytes/op=131,072、5 盘均分、67.4 ops/query vs 理论 64）。**verify：`--verify=true` 在本 build 的 NoF 路径恒失败（HANDOVER:2143 早已记录，非新问题）**——NoF 写后同进程校验 8/8 errors、内存段 0/8；NoF 只读 3098/3098 failed；重灌 220k 后仍 88,368 条 `Segment verification failed`（从 key_0 起）→ 正式臂全 `--verify=false`，**内容一致性仍未验证**；规格里的 verify 复用闸门是写错了，测试侧改用 failed=0 + status[ok] 是对的。事故：8MB 首轮预填中断 99,730/110,000（原因未定位）→ 随机 R1 抽到缺失 key failed=4,401(9.4%)，补齐后重跑、该轮作废；一次 NoF 整池注册失败（refusing unsafe per-I/O fallback）→ 3/3 重试通过；12:23 双驱动实例误跑（8mb_R1 failed=4,398）→ 按 PID 全停、单实例重跑、作废轮留证；两次 PowerShell `$S/$R` 展开事故（垃圾目录已删）。**越界**：规格写“不改交付表”，测试侧新建 3 张表（4MB 随机 CC1B0054… / 8MB 顺序 FBE3ACC5… / 8MB 随机 ABE34633…）各填 R15 + 口径页重写 + 备份；原第七次表未动（12DF45B6…）。**缺口**：回执未给 bench md5/lib 解析路径与 P99/P99.9/Pmax 绝对值；verify 原始报错行未贴。环境终态：target TERM、4457/4426/4421 无监听、5 盘回 nvme、master 224956/client 3843357 未动、hugepages 227,253 free、NoF 段 1 条@4457 仍在 master 元数据、master_key_count=333,000；node1/3 未登录。产物 R76 65 文件/73.5MB；台账 §115；INDEX R76。** |
+| E3-CH | 2026-11-12 | **填满 3 张新表的 NoF 侧：c/d × 3 口径 × 4 并发（2×60s/格）** | 已完成（回执已收；24/24 格、48/48 轮 failed=0；c 8MB GDS 通） | 前置：node2/4 独占（10s Δ=0.00%，node4 同事进程未触碰）；target `/tmp/bs3_tgt.sh` md5 2556998a、pid 1667690@4457、num_blocks 75,014,658,560、strip128、reactor 156–161；master 224953 未重启、client 3843357 未动；keys 复用成功（4MB 220k + 8MB 110k）。**结果（GiB/s，2 轮中位数；并发序 1/1、1/16、16/1、16/16）**：4MB 随机 c 6.96/11.82/12.69/12.69、d 5.02/8.57/11.39/11.55；8MB 顺序 c 9.99/12.09/12.69/12.69、d 7.40/8.89/11.66/11.75；8MB 随机 c 8.27/12.07/12.69/12.69、d 5.61/8.75/11.66/11.75。**12.69 GiB/s 是客户端硬上限**（16/1 与 16/16 keys/s 逐位相同：4MB 3248.42/3248.41、8MB 1624.21），未归因（≈13.63 GB/s，未做单盘基准）。随机 vs 顺序（8MB）：c −17.2%、d −24.2%（E3-CC −23.3% 同向同量级）。组内离散 ≤2.0%。iostat：bytes/op 全 131,072；ops/key 4MB 30.3–34.5、8MB 61.3–69.4（采样边界）；5 盘极差 0.013%。**c 8MB 未 blocked**：冒烟 cuda_read 817,600、host_io=0（GDS），正式 16 轮 failed=0。**d 1/1 clean 覆盖 R15（K 列 keys/s）**：4MB 随机 1281.22→1285.38（+0.3%）、8MB 顺序 933.81→947.18（+1.4%）、8MB 随机 715.37→718.35（+0.4%）；timing 开销 <1.5%，三张表同一口径；E3-CC 的 d 4MB 随机 5.023 vs 本轮 5.02（−0.06%）复现。表 md5：4MB 随机 cc1b0054→6ba3c96b、8MB 顺序 fbe3acc5→0175b9e3、8MB 随机 abe34633→9808ba9a；只改 R11–R18 的 K–U，a/b 行 diff=0，口径页 18 条无残留；首次写入 InvalidCastException 在 Save 前（原 md5 未变），四级回退后通过。回退：TERM 1667690、4457 释放、5 盘回 nvme、master/client 未动、hugepages 未改；**NoF 注册与数据保留供 E3-CI**。缺口：24 格分位绝对值在 runs.csv/cells.csv，回执未列。产物 R80 114 文件/1,640,503 B；台账 §116；INDEX R80。** |
 
 ---
 
@@ -5981,7 +5982,7 @@ make -j$(nproc) && cd .. && ./collector.sh   # output/umdk-<commit>-aarch64-linu
 
 ---
 
-# E3-CH（待执行 · 2026-11-12）· 填满 3 张新表的 NoF 侧：c/d × 3 口径 × 4 并发（2×60s/格）
+# E3-CH（已关闭 · 2026-11-12）· 填满 3 张新表的 NoF 侧：c/d × 3 口径 × 4 并发（2×60s/格）
 
 > 用户新建了 3 张交付表（**4MB 随机读 / 8MB 顺序读 / 8MB 随机读**），目前只有 d 1/1（R15，E3-CC 的 timing 值）。
 > 本任务补 **c/d 其余格**：c/d × {4MB 随机、8MB 顺序、8MB 随机} × {1/1、1/16、16/1、16/16} = 24 格；**d 1/1 也用 clean 2 轮重测并覆盖 R15**，让整张表同一口径（E3-CC 的 timing 值写进结果 md，不丢）。
@@ -6025,6 +6026,47 @@ make -j$(nproc) && cd .. && ./collector.sh   # output/umdk-<commit>-aarch64-linu
 - `测试相关资料/第八次测试结果/R80_20261112_grid_cd/`；本地 `D:\gds性能\第八次测试\`；台账 §116；INDEX R80。
 - 必须给：独占判定；环境参数/PID；21 格 + 3 格 d 1/1 重测的逐格数值与 failed/回绕；iostat 自洽；c 8MB 是否 blocked；三张表改前/后 md5 + 回读；与 E3-CC d 1/1 的 clean/timing 差；回退记录。
 - 预计：24 格×2×60s=48 min + 起停/切换 ~15 + 记录/写表 ~15 ≈ **1.5 h**。
+
+## 回执（2026-11-12，已收）
+
+**结论：c/d 24 格全部完成，48/48 轮 failed=0、failed_cells=0、无 blocked；三张表 c/d 行（R11–R18）已填，d 1/1 用 clean 值覆盖 R15；c 8MB GDS 冒烟通过。**
+
+### 一、结果（GiB/s，2 轮中位数）
+
+| 口径 | 并发 | c | d |
+| --- | --- | --- | --- |
+| 4MB 随机 | 1/1 / 1/16 / 16/1 / 16/16 | 6.96 / 11.82 / 12.69 / 12.69 | 5.02 / 8.57 / 11.39 / 11.55 |
+| 8MB 顺序 | 1/1 / 1/16 / 16/1 / 16/16 | 9.99 / 12.09 / 12.69 / 12.69 | 7.40 / 8.89 / 11.66 / 11.75 |
+| 8MB 随机 | 1/1 / 1/16 / 16/1 / 16/16 | 8.27 / 12.07 / 12.69 / 12.69 | 5.61 / 8.75 / 11.66 / 11.75 |
+
+- **12.69 GiB/s 是客户端硬上限**：16/1 与 16/16 的 keys/s 逐位相同（4MB 3248.42/3248.41、8MB 1624.21），client 侧无排队；未归因（≈13.63 GB/s，未做单盘基准，不下结论）。
+- 随机 vs 顺序（8MB）：**c −17.2%、d −24.2%**（E3-CC −23.3%，同向同量级）。
+- 组内离散最大 2.0%（8MB 顺序 c 1/1），全部 ≤3%。
+- iostat：bytes_per_op 24 格全为 131,072；ops/key 4MB 30.3–34.5（理论 32）、8MB 61.3–69.4（理论 64），偏差来自 10s 采样边界；5 盘 Δreads 极差 0.013%。
+- c 8MB 未 blocked：冒烟 `cuda_read submitted/success=817600`、`host_io=0`（GDS）；正式 16 轮 failed=0。
+
+### 二、d 1/1 覆盖 R15（**keys/s 的 K 列**，E3-CC timing → 本轮 clean）
+
+| 口径 | E3-CC | 本轮 clean | 差 |
+| --- | --- | --- | --- |
+| 4MB 随机 | 1281.22 | 1285.38 | +0.3% |
+| 8MB 顺序 | 933.81 | 947.18 | +1.4% |
+| 8MB 随机 | 715.37 | 718.35 | +0.4% |
+
+- timing 开销 <1.5%，三张表自此同一口径；E3-CC 的 d 4MB 随机 5.023 vs 本轮 5.02（−0.06%）跨批次复现。对应 avg 见结果 md（不是 µs 的别混）。
+
+### 三、表 / 环境
+
+- 表 md5：4MB 随机 `cc1b0054…→6ba3c96b…`；8MB 顺序 `fbe3acc5…→0175b9e3…`；8MB 随机 `abe34633…→9808ba9a…`。
+- 只改 K–U 列 R11–R18；a/b 行 R3–R10 与备份逐格 diff=0；口径页保留单行表头、18 条内容、第 20 行无残留。
+- 首次写入在文本格 `n<10000` 抛 InvalidCastException（Save 前，原 md5 未变），改逐格 try/catch + 四级回退后一次通过。
+- 回退：停采样器 → TERM 1667690（4457 已释放）→ 5 盘 vfio-pci→nvme；master/client 未动、hugepages 未改；**保留 NoF 注册与数据供 E3-CI 复测**。
+- 独占：node2/4 可疑 PID 10s Δ=0.00%；node4 上 `l00958870` 的 master/client 是同事进程，未触碰。
+- 缺口：回执未给 24 格的 avg/P50/P90/P99/P999/Pmax 绝对值（在 runs.csv/cells.csv 里）。
+
+### 四、产物
+
+- `R80_20261112_grid_cd`：114 文件 / 1,640,503 B（meta 七节、ab_table、runs.csv 48 行、cells.csv 24 格、package.md5）；三份结果 md 追加「附录 A · c/d 网格」；台账 §116；INDEX R80。
 
 ---
 
