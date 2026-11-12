@@ -5975,3 +5975,94 @@ make -j$(nproc) && cd .. && ./collector.sh   # output/umdk-<commit>-aarch64-linu
 - 台账 §113；INDEX R77；五段式回执。
 - 必须给：node1/node4 的 liburma 解析路径+md5 对照表；`is_gpu_seg` 日志行；a 失败原始日志；dmesg 新增原始行；netlab lib A/B 结果（a/c/d）；最终判定（库 / P2P / ABI / 二进制）与下一手；环境是否已还原。
 - 预计 **15–20 min**（前置 5 + a 冒烟 3 + 库 A/B 5 + 记录 4）。
+
+---
+
+# E3-CH（待执行 · 2026-11-12）· 填满 3 张新表的 NoF 侧：c/d × 3 口径 × 4 并发（2×60s/格）
+
+> 用户新建了 3 张交付表（**4MB 随机读 / 8MB 顺序读 / 8MB 随机读**），目前只有 d 1/1（R15，E3-CC 的 timing 值）。
+> 本任务补 **c/d 其余格**：c/d × {4MB 随机、8MB 顺序、8MB 随机} × {1/1、1/16、16/1、16/16} = 24 格；**d 1/1 也用 clean 2 轮重测并覆盖 R15**，让整张表同一口径（E3-CC 的 timing 值写进结果 md，不丢）。
+> 并发/环境口径照 E3-BS 16 格：1/1 sleep0、其余 sleep50；4MB 220k keys、8MB 110k keys；NoF 源；N0+128K target；master=node2；4457。
+
+## 〇、前置（任一不满足就停并回报）
+
+- node2/4 独占（规范：可疑 PID 10s `/proc` 差值 <1% 单核）；**node1/3 不碰**。
+- 读 3 张表的实际布局：sheet 名、行号（a=R3–6、b=R7–10、c=R11–14、d=R15–18）、列（K=keys/s … U=GiB/s）；与标准不符就停，不盲写。记录三张表原 md5 + 备份 `bak_<时间>`。
+- 记录 bench 绝对路径 + md5、`ldd` 的 liburma 解析、target 脚本 md5（应 `2556998a…`）。
+
+## 一、环境（与 E3-BS/E3-CC 同规格）
+
+- target：N0 组 `21,22,28,29,2a`、RAID0 **strip128**、listener 4457、reactor 156–161、iobuf `8192,8192,640,4194304`、`-O 4194304`、`-R 128`、`-C 64`、无 `-q/-c/-n/-s`；记录 PID/md5/num_blocks/strip。
+- master=node2（50056/9006/8086）；NoF 注册 `141.61.84.247:4457`；必须 1 段。
+- keys 复用：master 应有 333,000 keys（220k 4MB + 110k 8MB + 3k 内存）；同盘序/同 strip 重建后 LBA 不变。先 10s 冒烟（d 4MB 随机 + d 8MB 顺序）`failed=0/status[ok]` 才复用；缺就重灌 220k/110k 并记录耗时。
+- **c 8MB 前置**：先跑 10s c 8MB 顺序冒烟；不通就跳过 c 的 8MB 格（表/回执标 blocked），其余照跑。
+
+## 二、矩阵（每格 2×60s，clean，不跑全量）
+
+- 3 个口径：4MB 随机（两轮 seed `20261112/20261113`）、8MB 顺序（seed 0）、8MB 随机（`20261112/20261113`）。
+- 4 个并发：1/1（sleep0）、1/16、16/1、16/16（sleep50）；沿用 E3-BS 矩阵脚本，只改 `--value_size/--num_keys/--shuffle_seed`；c 按 E3-BS c 的 GDS 启动、d=staging；全 `--verify=false`（旧限制）。
+- 顺序：c 1/1 → d 1/1（覆盖 R15）→ c/d 1/16 → c/d 16/1 → c/d 16/16；每个口径跑完立刻落 CSV；失败格重跑 ≤2 次，仍失败单列不写表。
+- 每格记录：avg/P50/P90/P99/P99.9/Pmax、K/L、GiB/s、queries、failed、是否回绕；每格前后 iostat（Raid0 reads/bytes + 5 盘）。4MB 期望 Raid0 ops/query=32、8MB=64，盘级 ×2。
+
+## 三、写表
+
+- 3 张表只改 **c 行（R11–R14）与 d 行（R15–R18）**；a/b 行不动；K–U 按 2 轮均值/中位数写入（沿用原表定义）。
+- R15 用本轮 clean 2 轮 d 1/1 覆盖；结果 md 记录“E3-CC timing → 本轮 clean”的差。
+- 口径页：写“每格 2 轮、c/d 16 格 32 样本；1/1 clean；`--verify=false`、内容未校验”。
+- 写入后重开回读 c/d 8 行；记录三张表后 md5；格式/公式会丢就停，不硬写。
+
+## 四、约束 / 回退
+
+- 不改源码/脚本/表结构；不 kill 他人；node1/3 不碰；不改 strip/master 位置。
+- 环境回退照 E3-BS：停我方 target、撤 4457、5 盘回 nvme、2b 不动、记 hugepages/dmesg；master/client/NoF 段状态写清。
+- 异常轮留日志；failed>0 单列。
+
+## 五、产物 / 回执
+
+- `测试相关资料/第八次测试结果/R80_20261112_grid_cd/`；本地 `D:\gds性能\第八次测试\`；台账 §116；INDEX R80。
+- 必须给：独占判定；环境参数/PID；21 格 + 3 格 d 1/1 重测的逐格数值与 failed/回绕；iostat 自洽；c 8MB 是否 blocked；三张表改前/后 md5 + 回读；与 E3-CC d 1/1 的 clean/timing 差；回退记录。
+- 预计：24 格×2×60s=48 min + 起停/切换 ~15 + 记录/写表 ~15 ≈ **1.5 h**。
+
+---
+
+# E3-CI（待执行 · 2026-11-12）· 填满 3 张新表的 memory 侧：a/b × 3 口径 × 4 并发（2×60s/格）
+
+> 承接 E3-CH。本任务补 **a/b 行**：a/b × {4MB 随机、8MB 顺序、8MB 随机} × 4 并发 = 24 格。
+> a=GDR/peermem、b=staging；memory 段 32GiB；4MB 用 3000 keys（现成）、8MB 用 **2000 keys**（16GiB，46.6%，避免满段偏差）。
+
+## 〇、前置
+
+- node2/4 独占；读 3 张表布局（a=R3–6、b=R7–10）；记录原 md5 + 备份。
+- 记录 memory 段进程/env/占用；4MB keys 3000 应在（36.6%）；不在就按 E3-BT 重建 + prefill 3000。
+
+## 一、4MB 随机 a/b（8 格）
+
+- 段：3000×4MB（36.6%）；a=GDR、b=staging；`--value_size=4194304 --num_keys=3000 --batch_size=1 --shuffle_seed=20261112/20261113 --local_buffer_size=2G --global_segment_size=0 --verify=false`、`numactl --cpunodebind=0`。
+- 并发 1/1（sleep0）、1/16、16/1、16/16（sleep50）；沿用 E3-BS 矩阵脚本；每格 2×60s。
+- 记 avg/P50/P90/P99/P99.9/Pmax、K/L、GiB/s、queries、failed。
+
+## 二、8MB a/b（16 格）
+
+- 清空/重建我方 memory 段（E3-BT 流程：只停我方 memory segment，不动 master/他人），重启同配置 32GiB。
+- prefill **2000 keys × 8MB**（`--key_include_value_size=true --verify=false --local_buffer_size=4G`、`MC_UB_STAGING_POOL_SIZE=4294967296`）；记录占用（应 ~46.6%）与 failed。
+- 先 10s a 8MB + b 8MB 冒烟；a 8MB（GDR）不通就跳过 a 的 8MB 格并标 blocked；b 8MB 用 4G 池。
+- a/b × {8MB 顺序 seed0、8MB 随机 seed 20261112/13} × 4 并发 = 16 格 ×2×60s；`--value_size=8388608 --num_keys=2000 --warmup_keys=23`。
+- 记录同 §一；每格前后记内存段占用（防止再次满段）。
+
+## 三、写表
+
+- 3 张表只改 **a 行（R3–R6）与 b 行（R7–R10）**；c/d 行不动；K–U 按 2 轮均值/中位数写入。
+- 口径页注明：a/b 2 轮、memory 段占用 4MB=36.6% / 8MB=46.6%、`--verify=false`、8MB 用 `_vs` key 空间。
+- 回读 8 行；记录三张表后 md5；格式会丢就停。
+
+## 四、约束 / 回退
+
+- 不改源码/脚本/表结构；不 kill 他人；node1/3 不碰。
+- memory 段重建前记录 PID/参数；结束按用户要求恢复（3000 4MB keys 或保留 8MB 段，回执写清）。
+- 异常轮留日志；failed>0 单列。
+
+## 五、产物 / 回执
+
+- `测试相关资料/第八次测试结果/R81_20261112_grid_ab/`；本地 `D:\gds性能\第八次测试\`；台账 §117；INDEX R81。
+- 必须给：独占判定；memory 段配置/占用；24 格数值与 failed；a/b 8MB 是否 blocked；三张表改前/后 md5 + 回读；回退记录。
+- 预计：24 格×2×60s=48 min + 段重建/prefill ~10 + 记录/写表 ~15 ≈ **1.3–1.5 h**。
