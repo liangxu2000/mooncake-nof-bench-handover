@@ -191,6 +191,7 @@
 | E3-CB | 2026-11-12 | **切 netlab 内核 + 加载现成 GDR 模块：node3 先、node1 后**（用户已确认可重启 node1；node1/3 独占） | 已完成（回执已收；内核+bridge 成功，b/NoF-host 通，a/c/d 仍 blocked） | 前置：核实 node1/node3 无他人进程/端口（独占但仍先查）；记录当前内核、grub 默认/索引、/boot、udma srcversion、target/master PID、vfio 盘、hugepages。**A. node3（先）**：一次性启动 netlab（保留基座默认）→ `uname -r` 必须 netlab → 按依赖加载 netlab 模块树 + 全量 `udma.ko`（**不加载 bridge**，无 GPU）→ `lsmod` 看 udma 270336、srcversion F3D2…（非 stub 673E…）→ 重启 target/master/client → b 1/1 + NoF-host 10s 冒烟 failed=0。**B. node1（后，A 成功才做）**：一次性启动 netlab → `uname -r` 确认 → `modprobe nvidia`（若未自动，nvidia-smi 必须正常）→ 加载全量 udma + bridge（按依赖）→ `lsmod` 看 udma 270336 + udma_nv_p2p_bridge → `/dev/uburma` → 重启 target/master/client → b/NoF-host 回归 → a/c/d 1/1 100-key 10s 冒烟 failed=0。**回退**：基座内核保持默认；netlab 失败就重启回基座；模块加载失败就 rmmod/重启；记录全部命令/PID/端口/模块/md5。不改源码/不改 target/strip；node2/4 不碰；异常保留。产物 R75 + 台账 §111 + INDEX + 五段式回执。**2026-11-12 回执：两节点均切到 6.6.0-netlab_pcie_ub_compat+（一次性启动、默认仍基座）；全量 udma 270336/srcversion F3D2CA85B0F488DE71E3062（原 stub 262144/673E…）；node1 bridge 18C54A1F… 已加载、dmesg `UDMA: GPU P2P ops registered by udma_nv_p2p_bridge`；nvidia 575.64.05 自动加载+peermem；/dev/uburma 7。b 1/1 10s 26,528 q/10.35 GiB/s/avg 377.45（E3-BD 26,428/10.32/378.45，≤0.8%）；NoF-host 21,309 q/8.32 GiB/s。a/c 仍 `Failed to register segment … Unknown error 2048 → register_buffer failed ret=-600`；d `cuMemGetHandleForAddressRange rc=801 → peermem → -2048`。**所有 GPU 缓冲路径都倒在 URMA GPU 段注册，所有 host 缓冲路径全通** → 缺口收敛到一条路径，不是 NoF/内存差异；按规格停手。途中阻断：netlab 下 PCIe NVMe 无 IOMMU 组（IORT don't map）→ vfio probe -22，用 `vfio enable_unsafe_noiommu_mode=Y` 绑定 5 盘（内核 taint、无 DMA 隔离，正式跑分前需评估/开 SMMU）。前置发现两节点非独占（node1 他人 HA master 773%/client 228%/容器/25 会话；node3 nvmf 598%/client 253%/14 会话）→ 授权后按 PID 精确 kill、未用 pkill；`kill -0` 对 root EPERM 误判已改用 `sudo -n kill -0`；node1 重启把他人 vfio 2b,91,92,a1,a2 释放回 nvme、未恢复。node3 target e7440ae0:4457/Raid0 strip64 num_blocks 75,014,659,200；master 50056/9006/8086；client 50156；hugepages 7168。段端点易错：client TE RPC :15793 vs master 登记段端点 141.61.84.149:13550。未做 16/1/16/16/8MB/strip。回退：基座仍是 grub 默认，reboot 即回。产物 R75 37 文件/395KB；台账 §111；INDEX R75。** |
 | E3-CD | 2026-11-12 | **定位 a/c/d 的 2048：GPU 段注册路径（只换运行时库 + 抓 dmesg）** | 已关闭（回执已收；4090D 无 P2P 硬阻塞，a/c 物理不可达；d 可救） | ①只读指纹：node1/node4 bench ldd 的 liburma 解析+md5、RPATH、找 netlab lib（36b0ab10）；②a 1/1 100-key 10s 冒烟抓 dmesg 前后 + `is_gpu_seg=` 日志行；③进程级 LD_LIBRARY_PATH netlab lib A/B。不编译/装驱动/rmmod/重启/改 grub；node2/4 只读。产物 R77 + 台账 §113 + INDEX + 五段式回执。**2026-11-12 回执：2048 两层叠加。①运行时库：node1 RPATH 指的 UMDK_netlab/lib 目录不存在 → ldd 落 /usr/lib64 老版（5c021f7f，is_gpu_seg 0）→ 普通 pin_user_pages_fast（-14/-12）。②GPU P2P：换 netlab 库（36b0ab10，is_gpu_seg=1，日志行证明二进制 OK）后正确进 bridge P2P，但 nvidia_p2p_get_pages 返回 -22 EINVAL；ABAB 四轮复现；nvidia-smi Peer Type N/A、topo GPU↔NIC 全 SYS。判定命中§三第 2 行：4090D GeForce 无 PCIe P2P，a/c 直写物理不可达（对照 node4 V100 可用）。已停手，未改内核/编译/kill；node4 只读；服务保持 E3-CB 终态。** **指挥侧源码复核：d 与 a/c 不同——staging 数据面 NIC 不碰 GPU，物理不需 P2P；被挡是 bench EnsureNofPools（stress_cluster_bench.cpp:1971/1993/2021）在 staging 下仍把 GPU 整池注册到 NoF（→-2048→return false），该注册只对 GDS 必要。host 暂存池由 real_client:4227/5967 独立注册（E3-N，不受 bench flag 影响）；UB staging 走 registerLogicalDeviceRegion（ub_transport.cpp:502，逻辑注册）→ b 能通的原因。零代码改动解法：d 跑 --nof_whole_pool_register=false（或 MC_NOF_WHOLE_POOL_REGISTER=0）跳过 GPU 注册；启动闸门 NofGpuLayoutSupported(4MB,128KB,32MB,false) 全 64KiB 对齐通过。待 E3-CE 冒烟实证（已派）。** |
 | E3-CE | 2026-11-12 | **node1/3：d staging 冒烟（`--nof_whole_pool_register=false` 跳过 GPU 整池注册）** | 已完成（回执已收；d 零代码改动打通） | 承接 E3-CD：a/c 物理不可达不碰；d 是 staging 不需 P2P，被 bench EnsureNofPools 多余 GPU 注册挡住，零代码改动可解。主臂 A：沿用 R75 d 1/1 100-key 冒烟命令+env，唯一加 `--nof_whole_pool_register=false`，开 timing，2×10s；判据 failed=0 + cuda_io=0 + host_io>0 + effective_path=nof/staging + 恒等式闭合。对照臂 B：同 A + 进程级 LD_LIBRARY_PATH=/home/yin/gdr/UMDK_netlab/lib（sudo 下 ldd 复核），1×10s，证库无关。A/B 都不通就抓日志+dmesg 停并回报，不猜/不改源码。不改源码/编译/装驱动/rmmod/重启/grub//usr/lib64/全局 symlink；不 kill 他人；node2/4 不碰；不修 lib 路径/不跑 a/c/16 并发/8MB/全量；进程级 flag/env 无持久改动。产物 `第二组测试环境/E3-CE_d_staging_flag_20261112/`、本地 `node1&3测试\`、台账§114、INDEX R78、五段式回执；10–15 min。**2026-11-12 回执：d 零代码改动打通。A（flag=false 老库）2×10s + B（flag=false netlab 库）1×10s，3 轮 failed=0、6.33–6.35 GiB/s。计数器 cuda_io=0/host_io>0/accelerator=0/dmabuf=0/peer_memory=0/gds 0 次 → 确凿 host staging；恒等式 −1.00/−1.01/−1.10 闭合。effective_path=nof/urma/cuda-domain 与 nof/staging 等价（指挥侧核实 stress_cluster_bench.cpp:2759-2762：NoF+use_gpu_buffer 一律打此粗标签，不分 staging/GDS；规格预期名写错，路径以计数器为准）。数据：get 334.5/335.8/338.8、scatter 174、copy_us 170.6/171.0（4090D PCIe4.0≈V100 336 一半）、total 509.7/511.3/514.4、Avg 617/614.7（含 query~107）、P50 483/491。A≈B（差≤1.2µs）→ 与库无关。get 335 高于 node2 176 因 node3 strip64+2N0+3N2；若改 strip128+全N0 d 有望 ~460µs（后续）。风险：首跑脚本 bug（sudo $HOME=/root）改绝对路径修复；yin cmake -j308 偶占 1 核（单核 9%/全机 0.03%）按阈值不停手、绑 N0、未 kill；段端点 :13550。零变更自检通过，仅进程级 flag/env 无需回退。未跑 a/c/16 并发/8MB/全量、未做永久 lib 改动。** |
+| E3-CC | 2026-11-12 | **node2/4：d 1/1 补测 4MB 随机读 + 8MB 顺序/随机读**（`--shuffle_seed`） | 已完成（回执已收；随机代价全在 NoF get_us、copy 不变；verify 旧限制已知） | 前置：node2/4 独占（他人进程 10 s Δ=0；load 7.7–7.9 / 13.0–15.4）；target = N0 组 21,22,28,29,2a + strip128 + 4457（脚本 md5 2556998a，与 E3-BS 同）；master=node2；220k 4MB keys 重灌 466 s（旧 keys 因 strip128 重排不可复用）；8MB 另灌 110k keys（同 880GB 工作集，`_vs` 隔离）。**结果（d 1/1，3 轮/臂）**：4MB 顺序 612.57 µs / 6.375 GiB/s，随机 777.58 / 5.023（avg +26.9%、P50 +34.7%）；8MB 顺序 1072.31 / 7.287，随机 1398.57 / 5.587（avg +30.4%、P50 +27.3%）。**代价全部在 get_us：4MB 169.5→382（+212.5）、8MB 289→589（+300）；copy 339.5→340、667→667 不变。** 每 MB 成本：4MB 153.1→194.4 µs/MB；8MB 134.0→174.8（8MB 比 4MB 便宜 ~12%）。4MB 顺序 612.57 vs E3-BS 630.29 = −2.8%（同窗口）；11 臂 failed=0、组内离散 ≤1.7%/≤1.1%、无回绕（4MB 76.8k–98.9k≪220k；8MB 42.8k–56.3k≪110k）；iostat 自洽（bytes/op=131,072、5 盘均分、67.4 ops/query vs 理论 64）。**verify：`--verify=true` 在本 build 的 NoF 路径恒失败（HANDOVER:2143 早已记录，非新问题）**——NoF 写后同进程校验 8/8 errors、内存段 0/8；NoF 只读 3098/3098 failed；重灌 220k 后仍 88,368 条 `Segment verification failed`（从 key_0 起）→ 正式臂全 `--verify=false`，**内容一致性仍未验证**；规格里的 verify 复用闸门是写错了，测试侧改用 failed=0 + status[ok] 是对的。事故：8MB 首轮预填中断 99,730/110,000（原因未定位）→ 随机 R1 抽到缺失 key failed=4,401(9.4%)，补齐后重跑、该轮作废；一次 NoF 整池注册失败（refusing unsafe per-I/O fallback）→ 3/3 重试通过；12:23 双驱动实例误跑（8mb_R1 failed=4,398）→ 按 PID 全停、单实例重跑、作废轮留证；两次 PowerShell `$S/$R` 展开事故（垃圾目录已删）。**越界**：规格写“不改交付表”，测试侧新建 3 张表（4MB 随机 CC1B0054… / 8MB 顺序 FBE3ACC5… / 8MB 随机 ABE34633…）各填 R15 + 口径页重写 + 备份；原第七次表未动（12DF45B6…）。**缺口**：回执未给 bench md5/lib 解析路径与 P99/P99.9/Pmax 绝对值；verify 原始报错行未贴。环境终态：target TERM、4457/4426/4421 无监听、5 盘回 nvme、master 224956/client 3843357 未动、hugepages 227,253 free、NoF 段 1 条@4457 仍在 master 元数据、master_key_count=333,000；node1/3 未登录。产物 R76 65 文件/73.5MB；台账 §115；INDEX R76。** |
 
 ---
 
@@ -5773,6 +5774,50 @@ lsmod | grep -E 'nvidia|gdrdrv' 2>&1
 - 台账 §112；INDEX R76；五段式回执。
 - 必须给：独占判定（第一行）；target/master/NoF 参数与 PID；220k keys 复用还是重灌；每条命令与 env（≤15 行）；4MB 5 臂 + 8MB 6 臂全部分位与分段拆解；iostat 自洽；是否回绕；与 E3-BS / E3-AX 的对照；风险与回退。
 - 预计：前置/重建 10–15 min + 4MB 5×60 s 5 min + 8MB 预填 3–8 min + 6×60 s 6 min + 记录 5 min ≈ **35–50 min**。
+
+## 回执（2026-11-12，已收）
+
+**结论：随机（随机 4MB/8MB 大块，非 4KB）显著更慢，代价全部落在 NoF 传输段 `get_us`，拷贝段不变；4MB 顺序与 E3-BS 同窗口（−2.8%）。**
+
+### 一、结果（d 1/1，3 轮/臂，avg µs / GiB/s）
+
+| 数据集 | 顺序 | 随机 | avg Δ | P50 Δ | P99 Δ | get_us | copy_us |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 4MB（220k） | 612.57 / 6.375 | 777.58 / 5.023 | +26.9% | +34.7% | +81.8% | 169.5 → 382 | 339.5 → 340 |
+| 8MB（110k） | 1072.31 / 7.287 | 1398.57 / 5.587 | +30.4% | +27.3% | +52.2% | 289 → 589 | 667 → 667 |
+
+- 每 MB 成本：4MB 顺序 153.1 / 随机 194.4 µs/MB；8MB 顺序 134.0 / 随机 174.8 → **8MB 比 4MB 便宜 ~12%**。
+- 11 臂 failed=0、status[ok] 100%；组内离散 4MB ≤1.7%、8MB ≤1.1%；无回绕（4MB 76.8k–98.9k≪220k；8MB 42.8k–56.3k≪110k）。
+- 逐轮：4MB S1 6.32/618.16、R1 5.00/780.41、R2 5.00/781.67、R3 5.07/770.67、S2 6.43/606.98；8MB S1 7.32/1066.68、R1 5.59/1397.78、S2 7.24/1079.52、R2 5.57/1402.35、S3 7.30/1070.72、R3 5.60/1395.59。
+- iostat（target 累计）：mid→after Δ Raid0 reads 19,994,944 / 2,620,777,299,968 B → bytes/op=131,072；5 盘各 Δ 3,999,000 完全均分；6 臂 296,708 queries → 67.4 ops/query（理论 64，差值为跨快照窗口冒烟残差）。
+
+### 二、窗口与口径
+
+- 4MB 顺序 612.57 vs E3-BS 630.29 = **−2.8%**（<3%，同窗口）；方向与 E3-BW 的 timing +0.7% 相反、量级 <3%，不作归因。
+- 8MB 无同规格历史基线；E3-AX 的 6.20 GiB/s 是旧 N2+64K，仅作跨规格参考。
+- `--shuffle_seed` 是**一次确定性打乱 key 列表**（`std::mt19937_64` + `std::shuffle`，`stress_cluster_bench.cpp:379/1332`），对象内部仍是 128KB 顺序分片 → 随机的是 4MB/8MB 大块顺序。
+
+### 三、验证（旧限制，非新问题）
+
+- `--verify=true` 在本 build 的 NoF 路径恒失败（HANDOVER:2143 早已记录）：NoF 写后同进程校验 8/8 errors、内存段 0/8；NoF 只读 3098/3098 failed；重灌 220k 后仍 88,368 条 `Segment verification failed`（从 key_0 起）。
+- 正式臂全部 `--verify=false`；`failed=0` 只代表 I/O 完整性（bytes==value_size），**内容一致性仍未验证**。规格里“verify=true 复用闸门”写错了，测试侧改用 failed=0 + status[ok] 是对的。
+- 若后续要内容校验，需另找路径（host-only / 独立校验工具 / 换 build），不在本轮。
+
+### 四、事故 / 偏差 / 缺口
+
+- 8MB 首轮预填中断在 99,730/110,000（原因未定位）→ 随机 R1 抽到缺失 key（failed=4,401=9.4%），补齐 110,000 后重跑，该轮作废。
+- 一次 NoF 整池注册失败（12:08 `refusing unsafe per-I/O fallback`）→ 重试 3/3 通过；12:23 双驱动实例误跑（8mb_R1 failed=4,398）→ 按 PID 全停、单实例重跑，作废轮留证。
+- 旧 220k 4MB keys 不可复用（strip128 重排后 LBA 不一致）→ 重灌 220k（466 s，failed=0）。
+- 两次 PowerShell 把 `$S/$R` 本地展开，写出 `c:Users…` 垃圾目录（已删，改字面路径 + base64 整段脚本）。
+- **越界**：规格写“不改交付表”，测试侧新建 3 张表（4MB 随机 `CC1B0054…` / 8MB 顺序 `FBE3ACC5…` / 8MB 随机 `ABE34633…`）各填 R15 + 口径页重写 + `bak_20261112_1311`；原第七次表未动（`12DF45B6…`）。**是否保留这三张新表待用户拍板。**
+- **缺口**：回执未给 bench md5/lib 解析路径、P99/P99.9/Pmax 绝对值、verify 原始报错行。
+
+### 五、环境 / 产物
+
+- target `/tmp/bs3_tgt.sh` md5 `2556998a…`（与 E3-BS 同一份）→ pid 1433614、4457、num_blocks 75,014,658,560、strip128、reactor 156–161、iobuf 8192,8192,640,4194304、`-i 4194304`、cache 64/1024、无 `-q/-c/-n/-s`；盘 21/22/28/29/2a 全 NUMA0；2b nvme。
+- NoF：客户端发现 [memory=1, NoF=1] 仅 4457；`nof_unregister` 对 4421/4426 removed=0。
+- 终态：target TERM、4457/4426/4421 无监听、5 盘回 nvme0–4、2b nvme、master 224956 / client 3843357 未动、HugePages_Free 227,253、NoF 段 1 条@4457 仍在 master 元数据、master_key_count=333,000；node1/3 全程未登录。
+- 产物 `测试相关资料/第八次测试结果/R76_20261112_random_8mb/` 65 文件/73,545,857 B（meta、ab_table、runs.csv 22 行、summary.csv 11 臂、matrix4/8.log、final_state、logs/、scripts/、package.md5）；三份结果 md（4MB 随机/8MB 顺序/8MB 随机）；台账 §115；INDEX R76。
 
 ---
 
