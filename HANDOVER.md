@@ -5601,3 +5601,75 @@ lsmod | grep -E 'nvidia|gdrdrv' 2>&1
 - 产物：`测试相关资料/第二组测试环境/E3-CB_netlab_switch_20261112/`；台账 §111；INDEX R75；五段式回执。
 - 必须给：两节点切换前后 `uname -r`/grub、模块加载命令与 `lsmod`（udma 版本/srcversion/bridge）、nvidia-smi、UB 设备、target/master/client PID/端口、b/NoF-host 与 a/c/d 冒烟原始值、失败/回退记录。
 - 预计：node3 10–15 min；node1 15–25 min；合计 30–40 min。
+
+---
+
+# E3-CC（待执行 · 2026-11-12）· node2/4：d 1/1 补测 4MB 随机读 + 8MB 顺序/随机读
+
+> 用户要补三组：**4MB 随机读、8MB 顺序读、8MB 随机读**；现有 4MB 顺序读是 E3-BS 的 d 1/1（630.29 µs / 6.16 GiB/s）。
+> **随机读机制（源码事实，`mooncake-store/benchmarks/stress_cluster_bench.cpp`）**：`--shuffle_seed=<非0>` 在 `RunSegmentRead` 里对 key 列表做**一次** `std::mt19937_64` + `std::shuffle`（`:379`、`:1332-1337`）；`--duration>0` 的读循环按 `all_keys[key_idx % total_keys]` 消费（`:1474`）。所以“随机”= **同一批对象、随机顺序的 4MB/8MB 大块**；对象内部仍是 128KB 顺序分片（`MC_NOF_SUBMIT_CHUNK_BYTES` 默认 128KB，`transfer_task.cpp:136`），**不是 4KB 随机**；seed=0 = 不打乱。
+> 8MB 走同一 NoF 路径：一个 8MB 值拆成 64 个 128KB SPDK I/O（4MB=32 个），target `-O 4194304` 不挡（E3-AX 有 8MB 48k keys 先例，6.20 GiB/s）。
+
+## 〇、前置（任一不满足就停并回报）
+
+- **独占判定**按规范：可疑 PID（mooncake/spdk/nvmf）的 `/proc/<pid>/stat` utime+stime 10 s 差值；<1% 单核=独占，1–5%=未确认，>5%=有干扰。有干扰就停，**不 kill 他人**。
+- 记录 node2 master（50056/9006/8086）PID、`master_key_count`、NoF 段列表；**必须只有 1 条 @4457**；多余的我方旧段（4421/4426）按 `nof_unregister` 清掉，**不动非我方段**。
+- 盘 `21,22,28,29,2a` 无 mount/holder；2b 系统盘不动；记录逐 BDF root port/NUMA。
+- 记录 bench 路径/md5；`strings <bench> | grep -i shuffle_seed`（或 `--help 2>&1 | grep shuffle`）**必须有**；没有就停并回报（**不改源码、不重编**）。
+- **不登录 node1/node3**（E3-CB 在进行）。
+
+## 一、target / keys（与 E3-BS 同规格）
+
+- 重建 target：N0 组 `21,22,28,29,2a`、RAID0 **strip128**、listener **4457**、参数同 E3-BO/R61（reactor 156–161、iobuf 8192,8192,640,4194304、`-O 4194304`、`-R 128`、`-C 64`、不加 `-q/-c/-n`、无 `-s`）。先 `grep bdev_raid_create node2_target_up.sh` 确认 `-z 128` 与这 5 块盘序；**不一致就停，不要顺手改**。记录 PID/md5/num_blocks/strip/逐盘 BDF。
+- **优先复用** E3-BS 的 220k 4MB keys（同盘序、同 strip 重建后 LBA 不变）：先 10 s d 1/1 冒烟（`--duration=10 --verify=true`），`failed=0` 且 `read_ok` 100% 才可复用；任一 mismatch/failed → 用 E3-BS 同款 prefill 重灌 220k（`--value_size=4194304 --num_keys=220000`），记录耗时/failed。
+- master `nof_register` 到 `141.61.84.247:4457`；记录 `nof_segments` 名称（必须 1 条）、`master_key_count`、`master_nof_allocated_bytes`、`master_total_nof_capacity_bytes`。
+
+## 二、4MB 臂（d 1/1，220k keys，约 5 min）
+
+公共参数**沿用 E3-BS d 1/1 的启动脚本与 env**，只加/改 `--shuffle_seed`：
+`--scenario=segment_read --role=reader --gpu_mode=staging --nof_replica_num=1 --replica_num=0 --master_admin_port=9006 --num_keys=220000 --value_size=4194304 --batch_size=1 --duration=60 --warmup_keys=45 --statis_interval=5 --local_buffer_size=2G --global_segment_size=0`；**不设 `--segments`/`--nof_segments`**（自动发现、必须只发现 1 条 NoF）；`MC_NOF_PORT=4457`、`SPDK_URMA_MAX_IO_SIZE=4194304`、`MC_BENCH_STAGING_TIMING=1`、`MC_BENCH_STAGING_PATH_TIMING=1`、`numactl --cpunodebind=0`；`MC_NOF_SUBMIT_CHUNK_BYTES` 不设（默认 128K），从 `/proc/<pid>/environ` 复核。
+
+| 臂 | seed | 说明 |
+| --- | --- | --- |
+| S1 | 0 | 同窗口顺序对照 |
+| R1 | 20261112 | 随机 |
+| R2 | 20261113 | 随机 |
+| R3 | 20261114 | 随机 |
+| S2 | 0 | 尾对照（查漂移） |
+
+- 每臂 60 s，前各 10 s 冒烟；记录 queries（**必须 < 220000**，否则回绕，参数不够）、avg/P50/P90/P99/P99.9/Pmax、GiB/s、failed、`transfer/submit/wait/copy/read/query/total`、iostat（Raid0 ops≈queries×32、5 盘≈×64）。
+- 判定：S1/S2 与 E3-BS 630.29 差 ≤3% 才算“同窗口可比”；随机 vs 顺序看 **transfer/read/total** 与 P99，不只看吞吐。
+
+## 三、8MB 臂（预填 + 6 臂，约 12–18 min）
+
+- 预填 **110,000 keys × 8MB = 880GB**（与 4MB 的 220k×4MB 同工作集）：基于 E3-BS 的 d prefill 命令，改 `--value_size=8388608 --num_keys=110000 --local_buffer_size=4G --key_include_value_size=true --verify=false`；`MC_UB_STAGING_POOL_SIZE=4294967296`（只认字节，别写 4G）。记录耗时/failed。
+- 30 s 冒烟（顺序、`--verify=false`）：`failed=0` 且每次返回 bytes=8MB 才继续；否则停 8MB 臂、保留 4MB 结果、回报，**不调驱动/不重建**。
+- 6 臂 ×60 s，交替防漂移：S(0)、R(20261112)、S(0)、R(20261113)、S(0)、R(20261114)。
+- 读参数同二，改 `--value_size=8388608 --num_keys=110000 --local_buffer_size=4G --key_include_value_size=true --verify=false --warmup_keys=23`。
+- 记录同二；iostat 预期 Raid0 ops≈queries×64、5 盘≈×128。
+- **口径限制**：`_vs` 后缀与 `KeySeed` 冲突，8MB 读**不校验内容**（`--verify=false`），回执必须写明；`failed` 只代表 I/O 完整性（返回 bytes==value_size）。
+
+## 四、对照与算法
+
+| 对照 | 用法 |
+| --- | --- |
+| E3-BS 4MB 顺序 | 630.29 / 6.16；transfer 176.62、copy 339.81、query 108.62 |
+| 本窗口 S1/S2 | 先证明窗口一致，再算随机差 |
+| E3-AX 8MB（旧 N2+64K） | 6.20 GiB/s / P50 1196.03 / P99 1605.63，**只作跨规格参考，不当基线** |
+
+- 8MB 与 4MB **不许直接相减 total**；用**每 MB 成本**（total/8192 vs total/4096）和 transfer/read 分段值比。
+- 随机臂的 GiB/s 与顺序臂同一公式（bytes/总时长），不用 keys/s 混比。
+- 结论只回答：①随机 4MB 比顺序慢/快多少（transfer、total、P99）；②8MB 顺序的绝对值与每 MB 成本；③8MB 随机相对 8MB 顺序的差；④是否有回绕/失败/污染。
+
+## 五、约束 / 回退
+
+- 不改源码、不改脚本、不改交付表；不 kill 不明进程；**node1/3 不碰**；只跑 node2/4；不跑 16 并发、不跑 a/b/c、不改 strip/master 位置。
+- 环境回退照 E3-BS：停我方 target、撤 4457 监听、5 盘回 nvme0–4、2b 不动、记 hugepages/dmesg；master/client 记录 PID；NoF 段是否保留要写清。
+- 异常轮保留原始日志；failed>0 的臂单列，不进均值。
+
+## 六、产物 / 回执
+
+- 测试侧 `测试相关资料/第八次测试结果/R76_20261112_random_8mb/`；本地 `D:\gds性能\第八次测试\`。
+- 台账 §112；INDEX R76；五段式回执。
+- 必须给：独占判定（第一行）；target/master/NoF 参数与 PID；220k keys 复用还是重灌；每条命令与 env（≤15 行）；4MB 5 臂 + 8MB 6 臂全部分位与分段拆解；iostat 自洽；是否回绕；与 E3-BS / E3-AX 的对照；风险与回退。
+- 预计：前置/重建 10–15 min + 4MB 5×60 s 5 min + 8MB 预填 3–8 min + 6×60 s 6 min + 记录 5 min ≈ **35–50 min**。
