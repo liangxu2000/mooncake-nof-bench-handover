@@ -205,6 +205,7 @@
 | E3-CB | 2026-11-12 | **切 netlab 内核 + 加载现成 GDR 模块：node3 先、node1 后**（用户已确认可重启 node1；node1/3 独占） | 已完成（回执已收；内核+bridge 成功，b/NoF-host 通，a/c/d 仍 blocked） | 前置：核实 node1/node3 无他人进程/端口（独占但仍先查）；记录当前内核、grub 默认/索引、/boot、udma srcversion、target/master PID、vfio 盘、hugepages。**A. node3（先）**：一次性启动 netlab（保留基座默认）→ `uname -r` 必须 netlab → 按依赖加载 netlab 模块树 + 全量 `udma.ko`（**不加载 bridge**，无 GPU）→ `lsmod` 看 udma 270336、srcversion F3D2…（非 stub 673E…）→ 重启 target/master/client → b 1/1 + NoF-host 10s 冒烟 failed=0。**B. node1（后，A 成功才做）**：一次性启动 netlab → `uname -r` 确认 → `modprobe nvidia`（若未自动，nvidia-smi 必须正常）→ 加载全量 udma + bridge（按依赖）→ `lsmod` 看 udma 270336 + udma_nv_p2p_bridge → `/dev/uburma` → 重启 target/master/client → b/NoF-host 回归 → a/c/d 1/1 100-key 10s 冒烟 failed=0。**回退**：基座内核保持默认；netlab 失败就重启回基座；模块加载失败就 rmmod/重启；记录全部命令/PID/端口/模块/md5。不改源码/不改 target/strip；node2/4 不碰；异常保留。产物 R75 + 台账 §111 + INDEX + 五段式回执。**2026-11-12 回执：两节点均切到 6.6.0-netlab_pcie_ub_compat+（一次性启动、默认仍基座）；全量 udma 270336/srcversion F3D2CA85B0F488DE71E3062（原 stub 262144/673E…）；node1 bridge 18C54A1F… 已加载、dmesg `UDMA: GPU P2P ops registered by udma_nv_p2p_bridge`；nvidia 575.64.05 自动加载+peermem；/dev/uburma 7。b 1/1 10s 26,528 q/10.35 GiB/s/avg 377.45（E3-BD 26,428/10.32/378.45，≤0.8%）；NoF-host 21,309 q/8.32 GiB/s。a/c 仍 `Failed to register segment … Unknown error 2048 → register_buffer failed ret=-600`；d `cuMemGetHandleForAddressRange rc=801 → peermem → -2048`。**所有 GPU 缓冲路径都倒在 URMA GPU 段注册，所有 host 缓冲路径全通** → 缺口收敛到一条路径，不是 NoF/内存差异；按规格停手。途中阻断：netlab 下 PCIe NVMe 无 IOMMU 组（IORT don't map）→ vfio probe -22，用 `vfio enable_unsafe_noiommu_mode=Y` 绑定 5 盘（内核 taint、无 DMA 隔离，正式跑分前需评估/开 SMMU）。前置发现两节点非独占（node1 他人 HA master 773%/client 228%/容器/25 会话；node3 nvmf 598%/client 253%/14 会话）→ 授权后按 PID 精确 kill、未用 pkill；`kill -0` 对 root EPERM 误判已改用 `sudo -n kill -0`；node1 重启把他人 vfio 2b,91,92,a1,a2 释放回 nvme、未恢复。node3 target e7440ae0:4457/Raid0 strip64 num_blocks 75,014,659,200；master 50056/9006/8086；client 50156；hugepages 7168。段端点易错：client TE RPC :15793 vs master 登记段端点 141.61.84.149:13550。未做 16/1/16/16/8MB/strip。回退：基座仍是 grub 默认，reboot 即回。产物 R75 37 文件/395KB；台账 §111；INDEX R75。** |
 | E3-CD | 2026-11-12 | **定位 a/c/d 的 2048：GPU 段注册路径（只换运行时库 + 抓 dmesg）** | 已关闭（回执已收；4090D 无 P2P 硬阻塞，a/c 物理不可达；d 可救） | ①只读指纹：node1/node4 bench ldd 的 liburma 解析+md5、RPATH、找 netlab lib（36b0ab10）；②a 1/1 100-key 10s 冒烟抓 dmesg 前后 + `is_gpu_seg=` 日志行；③进程级 LD_LIBRARY_PATH netlab lib A/B。不编译/装驱动/rmmod/重启/改 grub；node2/4 只读。产物 R77 + 台账 §113 + INDEX + 五段式回执。**2026-11-12 回执：2048 两层叠加。①运行时库：node1 RPATH 指的 UMDK_netlab/lib 目录不存在 → ldd 落 /usr/lib64 老版（5c021f7f，is_gpu_seg 0）→ 普通 pin_user_pages_fast（-14/-12）。②GPU P2P：换 netlab 库（36b0ab10，is_gpu_seg=1，日志行证明二进制 OK）后正确进 bridge P2P，但 nvidia_p2p_get_pages 返回 -22 EINVAL；ABAB 四轮复现；nvidia-smi Peer Type N/A、topo GPU↔NIC 全 SYS。判定命中§三第 2 行：4090D GeForce 无 PCIe P2P，a/c 直写物理不可达（对照 node4 V100 可用）。已停手，未改内核/编译/kill；node4 只读；服务保持 E3-CB 终态。** **指挥侧源码复核：d 与 a/c 不同——staging 数据面 NIC 不碰 GPU，物理不需 P2P；被挡是 bench EnsureNofPools（stress_cluster_bench.cpp:1971/1993/2021）在 staging 下仍把 GPU 整池注册到 NoF（→-2048→return false），该注册只对 GDS 必要。host 暂存池由 real_client:4227/5967 独立注册（E3-N，不受 bench flag 影响）；UB staging 走 registerLogicalDeviceRegion（ub_transport.cpp:502，逻辑注册）→ b 能通的原因。零代码改动解法：d 跑 --nof_whole_pool_register=false（或 MC_NOF_WHOLE_POOL_REGISTER=0）跳过 GPU 注册；启动闸门 NofGpuLayoutSupported(4MB,128KB,32MB,false) 全 64KiB 对齐通过。待 E3-CE 冒烟实证（已派）。** |
 | E3-CE | 2026-11-12 | **node1/3：d staging 冒烟（`--nof_whole_pool_register=false` 跳过 GPU 整池注册）** | 已完成（回执已收；d 零代码改动打通） | 承接 E3-CD：a/c 物理不可达不碰；d 是 staging 不需 P2P，被 bench EnsureNofPools 多余 GPU 注册挡住，零代码改动可解。主臂 A：沿用 R75 d 1/1 100-key 冒烟命令+env，唯一加 `--nof_whole_pool_register=false`，开 timing，2×10s；判据 failed=0 + cuda_io=0 + host_io>0 + effective_path=nof/staging + 恒等式闭合。对照臂 B：同 A + 进程级 LD_LIBRARY_PATH=/home/yin/gdr/UMDK_netlab/lib（sudo 下 ldd 复核），1×10s，证库无关。A/B 都不通就抓日志+dmesg 停并回报，不猜/不改源码。不改源码/编译/装驱动/rmmod/重启/grub//usr/lib64/全局 symlink；不 kill 他人；node2/4 不碰；不修 lib 路径/不跑 a/c/16 并发/8MB/全量；进程级 flag/env 无持久改动。产物 `第二组测试环境/E3-CE_d_staging_flag_20261112/`、本地 `node1&3测试\`、台账§114、INDEX R78、五段式回执；10–15 min。**2026-11-12 回执：d 零代码改动打通。A（flag=false 老库）2×10s + B（flag=false netlab 库）1×10s，3 轮 failed=0、6.33–6.35 GiB/s。计数器 cuda_io=0/host_io>0/accelerator=0/dmabuf=0/peer_memory=0/gds 0 次 → 确凿 host staging；恒等式 −1.00/−1.01/−1.10 闭合。effective_path=nof/urma/cuda-domain 与 nof/staging 等价（指挥侧核实 stress_cluster_bench.cpp:2759-2762：NoF+use_gpu_buffer 一律打此粗标签，不分 staging/GDS；规格预期名写错，路径以计数器为准）。数据：get 334.5/335.8/338.8、scatter 174、copy_us 170.6/171.0（4090D PCIe4.0≈V100 336 一半）、total 509.7/511.3/514.4、Avg 617/614.7（含 query~107）、P50 483/491。A≈B（差≤1.2µs）→ 与库无关。get 335 高于 node2 176 因 node3 strip64+2N0+3N2；若改 strip128+全N0 d 有望 ~460µs（后续）。风险：首跑脚本 bug（sudo $HOME=/root）改绝对路径修复；yin cmake -j308 偶占 1 核（单核 9%/全机 0.03%）按阈值不停手、绑 N0、未 kill；段端点 :13550。零变更自检通过，仅进程级 flag/env 无需回退。未跑 a/c/16 并发/8MB/全量、未做永久 lib 改动。** |
+| E3-CT | 2026-11-12 | **node1/3：解决 a/c 16/16 不可测——GPU peer 1088MiB 注册上限探针 + 分块注册** | 待执行 | 用户不接受不可测。根因：a/c GDR 要把 (1+16)×16×4MiB=1088MiB GPU buffer 一次性注册成 peer 段，URMA 2048；b/d host 分块注册不受影响；V100 同尺寸可测（78756.82/78778.35µs）→4090D 特有限制。①前置：HBM 锁确认、bench 源码状态（E3-CK 曾源码丢失）②**探针（决定性~15min）**：单段 64/128/256/512/1024/1088MiB 逐尺寸 + 多段累加拆 1088MiB，得 S_max/T_max③S_max<1088 但 T_max≥1088→分块可行：改 bench/UB transport 按 ≤S_max 分块多次注册（源码丢失则 git 恢复对应版本，最小 diff base64 回传）、重编、跑 a/c 16/16 3×60s（µs 全分位）+ 1/1/1/16/16/1 回归④T_max<1088→总量硬限，报证据不擅自改并发/走 staging。只解决 a/c 16/16/全 µs/log=0/HBM 锁/不 reboot/node2/4 不碰/源码最小 diff。产物 `node1&3测试/E3-CT_gpu_peer_reg_20261112/`、本地 `node1&3测试\`、台账§130、INDEX R93、五段式回执；探针 15+改编 30–60+测 10 ≈1–1.5h。 |
 | E3-CS | 2026-11-12 | **node1/3：测试侧整理四场景结果（1 个 md + 填 xlsx），放 `关键结果`** | 待执行 | 用户指令：测试侧 `测试相关资料\node1&3测试\关键结果\` 整理——md + 填用户建好的 xlsx（只填不改结构）。只整理不重跑。数据源 E3-CR(1/1、1/16 加锁值)+E3-CM(16/1、16/16)+E3-CQ(锁结论)。①前置：读 xlsx 模板结构（sheet/表头/行列/已有内容，不猜）、备份、前 md5、确认可写②md：四场景表(avg µs，**不放吞吐**；a/c 16/16 标不可测)+口径(HBM锁/N0+strip128/shim+hook/log=0/采样)+关键结论(GDR快于staging、a最快、c不再最差、16/16排队、c16/1长尾)+对照第一组+缺口/风险+来源③xlsx：按模板布局填 1/1、1/16(E3-CR)、16/1、16/16(E3-CM)，a/c16/16 不可测按模板习惯填/留空+备注，全 µs，不改表头/行列/公式/其他 sheet，回读校验+后 md5④模板缺列/表头对不上/单位歧义→停并回报不擅自改。纯整理不 kill/不重启/不动环境。产物 `关键结果\` md+填好的 xlsx+备份、台账§129、INDEX R92、五段式回执；~15–20min。 |
 | E3-CR | 2026-11-12 | **node1/3：加锁后重测 1/1 + 1/16（8 格），16/1、16/16 保留** | 已完成（回执已收；锁 100% 稳定，a/c 降 55–58%，b/d 不变） | 承接 E3-CQ（a 崩塌根因=HBM 降频，`-pm1 -lmc 10501` 修复）；E3-CM 的 1/1、1/16 全受 bug 影响需加锁重测，16/1、16/16 不受影响保留。只 8 格 a/b/c/d×1/1(sleep0)、1/16(sleep50)；a/c 16/16 硬边界不测。①前置：**确认锁生效 mem=10251/P2**（重启失效需重打）+环境重建（target 5盘 vfio 回 nvme→strip128全N0 4457、master/client、223k keys）②8 格×3×60s clean（4MB/warmup45/start0/sample0/log=0/shim+hook/NoF capsule=urma+4457/c reg_mode=peer/d flag=false）全分位+GiB/s+计数器+iostat③对照 E3-CM 旧值（1/1 a610.81/b362.86/c707.85/d497.05；1/16 a6018.16/b3084.05/c7207.24/d4910.55），预期 a/c 大幅改善、b/d 变化不大，并验 c 是否同修④跑中抽查 mem 仍 10251，掉则作废重跑；jetty 泄漏 rc=-104 则重启 target/client 记录。全 µs/log=0/只 8 格/不 reboot/node2/4 不碰/不改源码。产物 `node1&3测试/E3-CR_locked_1to1_1to16_20261112/`、本地 `node1&3测试\`、台账§128、INDEX R91、五段式回执；~50–60min。**2026-11-12 回执：加锁后 8 格重测完成。锁 24 轮×61-62 采样全 10251/P2 无降频。8 格(µs/GiB/s)：a 1/1 257.21/15.18、1/16 2713.41/23.02；b 1/1 359.31/10.87、1/16 3111.35/20.07；c 1/1 317.29/12.32、1/16 3000.69/20.81；d 1/1 448.79/8.70、1/16 4969.66/12.57；24 轮 failed=0。vs CM：a 1/1 −57.9%(2.38×)、a 1/16 −54.7%、c 1/1 −55.2%、c 1/16 −58.4%；b/d ±1.6%。长尾同修：a 1/16 P90/P99 19136/19399→2752/2752、c 1/16 19897→3047/3146；c 1/1 avg317≈P50 315。推翻 CM 两条：①"c 最差"错（c 达 b/d 84-104%，1/16 c 反超 d 65.6%）②"GDR 慢 60-68%/NoF 走 staging" 撤回（修后 GDR 全并发快于 staging）。环境：target 621477 strip128 全N0 4457、client 621841 段:13093、223k keys。坑：SPDK 写计数坏(bytes_written 恒0)/读正常/verify=false 内容未验；vfio 下 iostat 不可用改 bdev_get_iostat ops/req=32。台账/INDEX 写旧目录被拒→按顶部铁规写 node1&3测试。产物 e3cr 需复制。⚠HBM 锁重启失效每次开跑前重打。** |
 | E3-CQ | 2026-11-12 | **node1/3：定位并解决 a 1/1 阶跃崩塌（t≈20–30s P50 260→1278µs）** | 已完成（回执已收；根因=GPU HBM 降频，锁 HBM 解决） | 用户只关心这个、必须解决、node1/3 独占随用、不重跑 16 格只测 a 1/1。已排除 client 污染/nvidia_p2p 泄漏/eviction/日志。①前置+环境快照②a 1/1 90s 每秒采样（P50/吞吐 + nvidia-smi clock/temp/power/throttle + CPU freq + fd 数 + dmesg 增量）定位崩塌秒与前后变化③二分：GPU 隔离（--gpu_mode=host 90s，也崩=非GPU/不崩=GPU-GDR）、16/1 对比（已知不崩）、size/请求数、设备 bonding vs udmac、绑核 A/B④按结论试修复（锁频/qpair/env/hook/绑核）并复测 90s⑤判定+修复结果或给出可稳定报告时长上限（如 20s）+依据。只 a 1/1/不 reboot（硬闸门）/log=0/全 µs/异常保留/改过参数记回退。产物 `node1&3测试/E3-CQ_a_collapse_20261112/`、本地 `node1&3测试\`、台账§127、INDEX R90、五段式回执；~40–60min。**2026-11-12 回执：根因=GPU 显存降频（GDR DMA 不走 SM→util 0%→~17s 驱动降到 P8→HBM 10251→405MHz 25×→4MB 写 260→1294µs；P2→P8 与崩塌同秒；温度42-43℃/功率61→20W 排除过热/功耗/UB）。修复 `nvidia-smi -pm 1` + `-lmc 10501`（只 pm 无效；不锁 SM，lmconly 15.06GiB/s 90s 零崩塌 failed=0 P50 258）。二分：host 194.19µs/20.11GiB/s 不崩（崩只在 GDR）；16/1 不受影响（在途让 HBM 持续 DMA）；host 比 GDR 快 25%→GDR ~64µs 固定开销；16/1 2462µs 是队列(Little's law)。修正"16/1 3.97×"=bug 假象，真实 1.69×。影响：CM 1/1 全受影响、1/16 需重测、16/1/16/16 不受影响；CP 的10s/60s 即本 bug；CL 冒烟/CN host 不受影响→1/1、1/16 时延须加锁重测才可对外。环境：pm Enabled/HBM 10501（回退 -pm 0/-rmc），SM 未锁，节点未重启，重启失效需每次重跑。产物 node1&3测试\e3cq\ 需复制。** |
@@ -5671,6 +5672,48 @@ lsmod | grep -E 'nvidia|gdrdrv' 2>&1
 
 - 回退：基座仍是 grub 默认，reboot 即回；模块可 rmmod/重启；target/master/client 按 PID 停。
 - 产物 `第二组测试环境/E3-CB_netlab_switch_20261112/`：37 文件 / 395 KB（node1_raw.txt、node3_raw.txt、smoke/、scripts/、package.md5）；台账 §111；INDEX R75。
+
+---
+
+# E3-CT（待执行 · 2026-11-12）· node1/3：解决 a/c 16/16 不可测——GPU peer 1088MiB 注册上限探针 + 分块注册
+
+> **用户不接受 a/c 16/16 不可测，要解决。** 根因：a/c GDR 要把 `(1+16)×16×4MiB = 1088MiB` GPU buffer **一次性**注册成 peer 段，URMA 返回 **2048**；b/d staging 走 host 内存**分块**注册不受影响；**第一组 V100 同尺寸可测**（a/c 16/16 78756.82/78778.35µs）→ 限制是 **4090D GeForce hook/URMA 路径特有**，不是 Mooncake 通病。
+> 目标：先测出注册上限（**单段 vs 总量**），**能分块就改、重编、把 a/c 16/16 真正跑出来**。
+
+## 〇、前置
+
+- HBM 锁确认（`-pm 1 -lmc 10501`，10251/P2）；log=0；node1/3 独占；**不 reboot（硬闸门）**。
+- 记录 bench 源码/构建状态（E3-CK 曾发现 node1 `~/nds/Mooncake` 源码丢失只剩 build；**确认现在能否恢复源码**，记 commit/md5）。
+
+## 一、探针：GPU peer 注册上限（决定性，~15min）
+
+- 写最小 CUDA + URMA/SPDK 注册程序（或复用 bench 的注册路径），带 hook + UMDK lib，分配 GPU buffer 后：
+  1. **单段递增**：64 / 128 / 256 / 512 / 1024 / 1088 MiB，逐尺寸注册，记成功/失败 + 错误码（是否都是 2048）。
+  2. **多段累加**：把 1088 MiB 拆成 N 个同尺寸段（如 64/128/256 MiB × N），逐段注册，记总量最多到多少、第几段失败。
+- **gate**：得出 **单段最大 S_max** 与 **总量最大 T_max**：
+  - `S_max < 1088` 但 `T_max ≥ 1088` → **分块注册可行**，进二。
+  - `T_max < 1088` → 总量硬限，进三。
+
+## 二、分块注册（若可行）
+
+- 改 bench/UB transport：把 1088MiB GPU buffer 按 **≤S_max 分块多次注册**（而非整块一次）。**源码**：若 node1 源码丢失，从 git 仓恢复对应版本（记 commit/md5）再改；**最小 diff + base64 回传指挥**（代码保管）。
+- 重编 bench，跑 **a/c 16/16 3×60s**（log=0）：确认 setup 成功、failed=0、有数据；记 avg/P50/P90/P99/P99.9/Pmax（µs）。
+- **回归**：分块后 a/c 的 **1/1、1/16、16/1** 各 1 轮冒烟，确认没退化（对照 E3-CR/E3-CM）。
+
+## 三、若总量硬限
+
+- 报结论 + 证据（探针各段结果），明确"要测只能改并发定义或走 staging（破坏可比性）"；不擅自做破坏可比性的改动。
+
+## 四、约束
+
+- 只解决 a/c 16/16；不改其他格；全 µs；log=0；HBM 锁；不 reboot；node2/4 不碰；源码改动最小 + diff 回传。
+
+## 五、产物 / 回执
+
+- 测试侧 `node1&3测试/E3-CT_gpu_peer_reg_20261112/`；本地 `D:\gds性能\node1&3测试\`。
+- 台账 §130；INDEX R93；五段式回执。
+- 必须给：探针各尺寸/分段结果（成功/失败+错误码）；**S_max / T_max**；采用路径（分块/硬限）；若分块 → diff+md5+重编+**a/c 16/16 实测（µs）**+1/1/1/16/16/1 回归；环境状态。
+- 预计 **探针 15min + 源码恢复/改/编 30–60min + 测 10min ≈ 1–1.5h**（分块可行时）。
 
 ---
 
