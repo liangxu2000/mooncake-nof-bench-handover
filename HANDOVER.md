@@ -205,7 +205,8 @@
 | E3-CB | 2026-11-12 | **切 netlab 内核 + 加载现成 GDR 模块：node3 先、node1 后**（用户已确认可重启 node1；node1/3 独占） | 已完成（回执已收；内核+bridge 成功，b/NoF-host 通，a/c/d 仍 blocked） | 前置：核实 node1/node3 无他人进程/端口（独占但仍先查）；记录当前内核、grub 默认/索引、/boot、udma srcversion、target/master PID、vfio 盘、hugepages。**A. node3（先）**：一次性启动 netlab（保留基座默认）→ `uname -r` 必须 netlab → 按依赖加载 netlab 模块树 + 全量 `udma.ko`（**不加载 bridge**，无 GPU）→ `lsmod` 看 udma 270336、srcversion F3D2…（非 stub 673E…）→ 重启 target/master/client → b 1/1 + NoF-host 10s 冒烟 failed=0。**B. node1（后，A 成功才做）**：一次性启动 netlab → `uname -r` 确认 → `modprobe nvidia`（若未自动，nvidia-smi 必须正常）→ 加载全量 udma + bridge（按依赖）→ `lsmod` 看 udma 270336 + udma_nv_p2p_bridge → `/dev/uburma` → 重启 target/master/client → b/NoF-host 回归 → a/c/d 1/1 100-key 10s 冒烟 failed=0。**回退**：基座内核保持默认；netlab 失败就重启回基座；模块加载失败就 rmmod/重启；记录全部命令/PID/端口/模块/md5。不改源码/不改 target/strip；node2/4 不碰；异常保留。产物 R75 + 台账 §111 + INDEX + 五段式回执。**2026-11-12 回执：两节点均切到 6.6.0-netlab_pcie_ub_compat+（一次性启动、默认仍基座）；全量 udma 270336/srcversion F3D2CA85B0F488DE71E3062（原 stub 262144/673E…）；node1 bridge 18C54A1F… 已加载、dmesg `UDMA: GPU P2P ops registered by udma_nv_p2p_bridge`；nvidia 575.64.05 自动加载+peermem；/dev/uburma 7。b 1/1 10s 26,528 q/10.35 GiB/s/avg 377.45（E3-BD 26,428/10.32/378.45，≤0.8%）；NoF-host 21,309 q/8.32 GiB/s。a/c 仍 `Failed to register segment … Unknown error 2048 → register_buffer failed ret=-600`；d `cuMemGetHandleForAddressRange rc=801 → peermem → -2048`。**所有 GPU 缓冲路径都倒在 URMA GPU 段注册，所有 host 缓冲路径全通** → 缺口收敛到一条路径，不是 NoF/内存差异；按规格停手。途中阻断：netlab 下 PCIe NVMe 无 IOMMU 组（IORT don't map）→ vfio probe -22，用 `vfio enable_unsafe_noiommu_mode=Y` 绑定 5 盘（内核 taint、无 DMA 隔离，正式跑分前需评估/开 SMMU）。前置发现两节点非独占（node1 他人 HA master 773%/client 228%/容器/25 会话；node3 nvmf 598%/client 253%/14 会话）→ 授权后按 PID 精确 kill、未用 pkill；`kill -0` 对 root EPERM 误判已改用 `sudo -n kill -0`；node1 重启把他人 vfio 2b,91,92,a1,a2 释放回 nvme、未恢复。node3 target e7440ae0:4457/Raid0 strip64 num_blocks 75,014,659,200；master 50056/9006/8086；client 50156；hugepages 7168。段端点易错：client TE RPC :15793 vs master 登记段端点 141.61.84.149:13550。未做 16/1/16/16/8MB/strip。回退：基座仍是 grub 默认，reboot 即回。产物 R75 37 文件/395KB；台账 §111；INDEX R75。** |
 | E3-CD | 2026-11-12 | **定位 a/c/d 的 2048：GPU 段注册路径（只换运行时库 + 抓 dmesg）** | 已关闭（回执已收；4090D 无 P2P 硬阻塞，a/c 物理不可达；d 可救） | ①只读指纹：node1/node4 bench ldd 的 liburma 解析+md5、RPATH、找 netlab lib（36b0ab10）；②a 1/1 100-key 10s 冒烟抓 dmesg 前后 + `is_gpu_seg=` 日志行；③进程级 LD_LIBRARY_PATH netlab lib A/B。不编译/装驱动/rmmod/重启/改 grub；node2/4 只读。产物 R77 + 台账 §113 + INDEX + 五段式回执。**2026-11-12 回执：2048 两层叠加。①运行时库：node1 RPATH 指的 UMDK_netlab/lib 目录不存在 → ldd 落 /usr/lib64 老版（5c021f7f，is_gpu_seg 0）→ 普通 pin_user_pages_fast（-14/-12）。②GPU P2P：换 netlab 库（36b0ab10，is_gpu_seg=1，日志行证明二进制 OK）后正确进 bridge P2P，但 nvidia_p2p_get_pages 返回 -22 EINVAL；ABAB 四轮复现；nvidia-smi Peer Type N/A、topo GPU↔NIC 全 SYS。判定命中§三第 2 行：4090D GeForce 无 PCIe P2P，a/c 直写物理不可达（对照 node4 V100 可用）。已停手，未改内核/编译/kill；node4 只读；服务保持 E3-CB 终态。** **指挥侧源码复核：d 与 a/c 不同——staging 数据面 NIC 不碰 GPU，物理不需 P2P；被挡是 bench EnsureNofPools（stress_cluster_bench.cpp:1971/1993/2021）在 staging 下仍把 GPU 整池注册到 NoF（→-2048→return false），该注册只对 GDS 必要。host 暂存池由 real_client:4227/5967 独立注册（E3-N，不受 bench flag 影响）；UB staging 走 registerLogicalDeviceRegion（ub_transport.cpp:502，逻辑注册）→ b 能通的原因。零代码改动解法：d 跑 --nof_whole_pool_register=false（或 MC_NOF_WHOLE_POOL_REGISTER=0）跳过 GPU 注册；启动闸门 NofGpuLayoutSupported(4MB,128KB,32MB,false) 全 64KiB 对齐通过。待 E3-CE 冒烟实证（已派）。** |
 | E3-CE | 2026-11-12 | **node1/3：d staging 冒烟（`--nof_whole_pool_register=false` 跳过 GPU 整池注册）** | 已完成（回执已收；d 零代码改动打通） | 承接 E3-CD：a/c 物理不可达不碰；d 是 staging 不需 P2P，被 bench EnsureNofPools 多余 GPU 注册挡住，零代码改动可解。主臂 A：沿用 R75 d 1/1 100-key 冒烟命令+env，唯一加 `--nof_whole_pool_register=false`，开 timing，2×10s；判据 failed=0 + cuda_io=0 + host_io>0 + effective_path=nof/staging + 恒等式闭合。对照臂 B：同 A + 进程级 LD_LIBRARY_PATH=/home/yin/gdr/UMDK_netlab/lib（sudo 下 ldd 复核），1×10s，证库无关。A/B 都不通就抓日志+dmesg 停并回报，不猜/不改源码。不改源码/编译/装驱动/rmmod/重启/grub//usr/lib64/全局 symlink；不 kill 他人；node2/4 不碰；不修 lib 路径/不跑 a/c/16 并发/8MB/全量；进程级 flag/env 无持久改动。产物 `第二组测试环境/E3-CE_d_staging_flag_20261112/`、本地 `node1&3测试\`、台账§114、INDEX R78、五段式回执；10–15 min。**2026-11-12 回执：d 零代码改动打通。A（flag=false 老库）2×10s + B（flag=false netlab 库）1×10s，3 轮 failed=0、6.33–6.35 GiB/s。计数器 cuda_io=0/host_io>0/accelerator=0/dmabuf=0/peer_memory=0/gds 0 次 → 确凿 host staging；恒等式 −1.00/−1.01/−1.10 闭合。effective_path=nof/urma/cuda-domain 与 nof/staging 等价（指挥侧核实 stress_cluster_bench.cpp:2759-2762：NoF+use_gpu_buffer 一律打此粗标签，不分 staging/GDS；规格预期名写错，路径以计数器为准）。数据：get 334.5/335.8/338.8、scatter 174、copy_us 170.6/171.0（4090D PCIe4.0≈V100 336 一半）、total 509.7/511.3/514.4、Avg 617/614.7（含 query~107）、P50 483/491。A≈B（差≤1.2µs）→ 与库无关。get 335 高于 node2 176 因 node3 strip64+2N0+3N2；若改 strip128+全N0 d 有望 ~460µs（后续）。风险：首跑脚本 bug（sudo $HOME=/root）改绝对路径修复；yin cmake -j308 偶占 1 核（单核 9%/全机 0.03%）按阈值不停手、绑 N0、未 kill；段端点 :13550。零变更自检通过，仅进程级 flag/env 无需回退。未跑 a/c/16 并发/8MB/全量、未做永久 lib 改动。** |
-| E3-DD | 2026-11-16 | **node1：BAR1 扩 32G（路 A：BIOS PcieResourceDsm5→Kernel Reserve）→ 重启 → 32G 验证 → 1088MiB 探针 → a/c 16/16 冒烟** | 待执行 | 用户已授权（2026-11-16 "开干"）：PATCH BIOS + 重启 node1，用户通知同事。①重启前记录基线 + Redfish 拉 SEL（Health=Critical 原因）+ GET Bios 当前值；②`PATCH /redfish/v1/Systems/1/Bios/Settings` 写 `{"Attributes":{"PcieResourceDsm5":"Kernel Reserve"}}`（失败即停不重启）；③GracefulRestart，5–8min 未回查 BMC、卡死 ForceOff→On；回连验 `uname -r`=gdr_e3cf/网络/盘/uburma/udma270336+bridge/HBM 锁；GET Bios 确认已生效；④BAR1 两支：开机已 32G 直接过；仍 256M → rmmod bridge→卸 nvidia→`echo 0`→`echo 15`→lspci 验 32G→重载 nvidia+bridge→重打 HBM 锁；-524 仍现=设置无效（PATCH 回 BIOS Reserve，转路 B）；-ENOSPC=桥窗口失败，停并回报；⑤1088MiB is_gpu_seg=1 探针（复用 E3-CT 脚本）；⑥重建 node1 client+memory 段+3000 keys（node3 NoF 220k 在），a/c 16/16 冒烟 10–30s（不正式）+ a/c 1/1 回归（E3-CR a257.21/c317.29，c 必须 220k keys）。**红线：绝不 rmmod udma；只卸 bridge+nvidia；不 kill 同事；node2/4 不碰；不再重启（除本任务一次）。** 产物 `node1&3测试/E3-DD_bar1_32g_20261116/`、台账 §140、INDEX R103、五段式回执；~50–70min。 |
+| E3-DE | 2026-11-16 | **node1：不重启解开 preserve_config 门（运行时模块）→ 卸 nvidia → resize BAR1=32G → 1088MiB 探针 → a/c 16/16 冒烟** | 待执行 | 承接 E3-DD（BIOS 写通道 412 硬拒）。**路 B'**：编译最小模块 `pci_unpreserve.ko`（遍历到 root bus → `to_pci_host_bridge(b->bridge)` → `host->preserve_config=0`）→ insmod（BTF 报错则 objcopy 去 .BTF）→ dmesg 验 `preserve_config 1 -> 0` → `rmmod udma_nv_p2p_bridge`→卸 nvidia→`echo 0`→`echo 15`→**lspci 验 BAR1=32GiB**→重载 nvidia+bridge→重打 HBM 锁→1088MiB 探针→a/c 16/16 冒烟 10–30s+a/c 1/1 回归（a257.21/c317.29，c 220k keys）。门禁：`/lib/modules/$(uname -r)/build/.config` 与 `/boot/config-$(uname -r)` 一致（结构体偏移必须匹配）、vermagic 一致；`-524` 仍现=另有 gate 停；`-ENOSPC`=桥窗口扩不动停（不手工改桥）。**不重启、不改 BIOS、绝不 rmmod udma、不 kill 同事。** 回退：rmmod 模块（flag 保持 0 到重启）/ resize 回 8。产物 `node1&3测试/E3-DE_unpreserve_20261116/`、台账 §141、INDEX R104、五段式回执；~25–40min。 |
+| E3-DD | 2026-11-16 | **node1：BAR1 扩 32G（路 A：BIOS PcieResourceDsm5→Kernel Reserve）→ 重启 → 32G 验证 → 1088MiB 探针 → a/c 16/16 冒烟** | 已完成（回执已收；停在 PATCH：iBMC 412 硬拒，零变更；Health=Critical=PSU2 无输入） | **2026-11-16 回执**：`PATCH /redfish/v1/Systems/1/Bios/Settings` → **412 Precondition Failed**（0 字节体）；**ETag 全排除**（20 组 If-Match × 2 Content-Type、W/ 变体、`*`、无头）+ Basic/X-Auth-Token 双认证 + Accept/OData-Version 全 412；**非法 JSON → 400（482B 体）**证明 If-Match 通过、body 正常解析 → 412 是语义性拒绝；**整条 BIOS 写通道被封**（PcieAspm 等值/真改、带 BIOS 密码都 412；Settings.Revoke 200）；排除 Allow/会话/角色/pending。**Health=Critical 真因=PSU2 无交流输入（0V/0W），975W 全压 PSU1→无冗余**，SEL 32 条无 Critical；**重启前先查 PSU2**。按规格停手：重启/BAR1 验证/探针/16/16 全未做；环境全原样（20 容器/3 会话/udma 270336 C3282D01/bridge/HBM 10501 P0/grub=GDR）；同事 master 78459 在操作前 17:36 已 defunct、18:08 消失，非我方所杀。产物 e3dd。**下一步 E3-DE：路 B' 运行时模块置 preserve_config=0→不重启 resize**。 | 用户已授权（2026-11-16 "开干"）：PATCH BIOS + 重启 node1，用户通知同事。①重启前记录基线 + Redfish 拉 SEL（Health=Critical 原因）+ GET Bios 当前值；②`PATCH /redfish/v1/Systems/1/Bios/Settings` 写 `{"Attributes":{"PcieResourceDsm5":"Kernel Reserve"}}`（失败即停不重启）；③GracefulRestart，5–8min 未回查 BMC、卡死 ForceOff→On；回连验 `uname -r`=gdr_e3cf/网络/盘/uburma/udma270336+bridge/HBM 锁；GET Bios 确认已生效；④BAR1 两支：开机已 32G 直接过；仍 256M → rmmod bridge→卸 nvidia→`echo 0`→`echo 15`→lspci 验 32G→重载 nvidia+bridge→重打 HBM 锁；-524 仍现=设置无效（PATCH 回 BIOS Reserve，转路 B）；-ENOSPC=桥窗口失败，停并回报；⑤1088MiB is_gpu_seg=1 探针（复用 E3-CT 脚本）；⑥重建 node1 client+memory 段+3000 keys（node3 NoF 220k 在），a/c 16/16 冒烟 10–30s（不正式）+ a/c 1/1 回归（E3-CR a257.21/c317.29，c 必须 220k keys）。**红线：绝不 rmmod udma；只卸 bridge+nvidia；不 kill 同事；node2/4 不碰；不再重启（除本任务一次）。** 产物 `node1&3测试/E3-DD_bar1_32g_20261116/`、台账 §140、INDEX R103、五段式回执；~50–70min。 |
 | E3-DC | 2026-11-16 | **node1：BAR1 必扩 32G——只读取证 + 两条路备料（BIOS / 内核补丁）** | 已完成（回执已收；零变更；路 A 可远程改、路 B 可补丁；推荐 A） | **2026-11-16 回执**：①**路 A 可远程改**——144 属性全扫，唯一相关开关 `PcieResourceDsm5`（`PCIe DSM5# Mode`，`./AdvancedMenu/PcieConfiguration`），`BIOS Reserve`→`Kernel Reserve`（ReadOnly=false/Immutable=false），`PATCH /redfish/v1/Systems/1/Bios/Settings` 重启生效（本轮未执行）；BMC=Huawei Redfish 1.20.1/iBMC3 FW 26.02.12.18/BIOS 12.03/**Health=Critical ⚠**；ipmitool 不兼容、无 ipmcget/set。②**路 B 可补丁无捷径**——preserve_config 4 处：`setup-res.c:440`（resize→524）、`setup-bus.c:1730`（关自动重排）、`pci_root.c:1061`（置位源）、`iort.c:1050`（RMR）；无 cmdline 开关；推荐候选②=在 `pci_resize_resource()` 把 `return -ENOTSUPP` 换 `pr_warn_once`（4 行）；**不需要 pci=realloc**（sysfs resize 的 `pci_assign_unassigned_bus_resources()` 不看 preserve_config，扩桥走 `pci_reassign_bridge_resources()` 自下上溯）。③**窗口装得下**：根总线 0000:20=12288GiB，8 个占用只挤最低≈316MiB，下个 32GiB 对齐槽 `0x800800000000` 空闲；根端口 20:08.0（HiSilicon rev50）无 Resizable Window（路 B 需硬重排未验证、路 A 若开机直接分配可绕开）。④**重启影响**：同事 master 78459（24711/24712）、datasystem_worker 34485（:31501）、root@141.1.58.87 会话、20 容器（mooncake-compile/codeagent×5/vllm×2/redis/harbor-log/postgres）；GPU 空闲（无计算/无 /dev/nvidia* fd/无 vfio/无编译）→ GPU 任务零损失；重启后只需重打 HBM 锁，grub=GDR、udma+bridge 由 /opt/ubbase.sh 开机装载。⑤终态复验：`resource1_resize=0xffc0` 未变、78459 存活、20 容器、uptime 1h20m。未知：Kernel Reserve 下开机是否直接 32G、解 gate 后桥窗口能否扩 32G（均需重启实测）、Critical 明细（未拉 SEL）。**推荐路 A**。 | 用户 2026-11-16 拍板：**BAR1 必须扩成 32GiB，不接受 a/c 16/16 不可测**。E3-CZ 已证 `echo 15` 被 `-524 ENOTSUPP` 拒（BIOS `_DSM` preserve_config=1），根端口 20:08.0 无 Resizable Window（第二风险），根总线窗口 768GiB。**只读取证、不改 BIOS、不 PATCH、不 echo resize、不卸 nvidia、不重启（硬闸门）**：①iBMC/Redfish 枚举 BIOS 属性（ResizableBar/Above4G 等原名+当前值），判定能否远程改；②硬件窗口量化（27:00.0 Resizable BAR 能力、20:08.0 桥窗口、32G 能否装下、dmesg preserve 证据）；③GDR 内核源码 grep preserve_config 全路径 + 路 B 最小补丁草案（不编译）+ 是否需 pci=realloc；④重启影响清单（同事 78459/编译 82271/82272、HBM 锁、grub=GDR）；⑤回执给推荐路径 + BIOS 精确清单或"无路"+证据。产物 `node1&3测试/E3-DC_bar1_bios_20261116/`、台账 §139、INDEX R102、五段式回执；~15–20 min。 |
 | E3-DB | 2026-11-12 | **node1/3：只读盘点当前进程（判断同事是否在跑 / GPU 被谁占 / BAR1 能否做）** | 已完成（回执已收；BAR1 不能做：同事 client 持 /dev/nvidia* refcnt=10 + 跑 benchmark + 编译；1018256 已不在、新 78459/78649） | 用户：现在与同事公用 node1/3，同事"应该刚起或还没起"；只读盘点不改环境。①两节点 uname/load/who、ps(pid/user/etime/pcpu, grep mooncake/nvmf_tgt/reactor/spdk/urma/bench)、关键端口 ss、node1 nvidia-smi+/dev/nvidia* 使用者、node3 target/master/client/5盘/vfio/NoF；可疑进程记 /proc utime+stime 10s 增量判是否真在跑②判断：同事是否在用 GPU(有进程+PID1018256 在且活跃→BAR1不能做；不在/刚起未占→有窗口但需用户点头)；我方 target/client/keys 在否③只读不 kill 不重启 node2/4 不碰④产物 `node1&3测试/E3-DB_proc_check_20261112/`、本地 `node1&3测试\`、台账§138、INDEX R101、五段式回执(进程表/GPU使用者/端口/结论/BAR1可否做)；~5min。**2026-11-12 回执：BAR1 不能做。nvidia-smi 看着空闲(util0%/3MiB/无计算进程)，但 /dev/nvidia-uvm+nvidia0+nvidiactl 被 root 78649 mooncake_client 持有、nvidia refcnt=10→rmmod 必报 in use。三条阻塞：①同事client持3 fd；②同事benchmark node3 542306 397%+544903 python prepare-store 264%；③同事编译 node1 cmake --build -j64+容器。PID 1018256 已不在(E3-DA重启清掉)，同事16:02新起 78459 master 130%/78649 client 402%→E3-CZ"可停1018256"授权已失效需重确认。不冲突：端口我方4457/50056/9006/8086/50156 vs 同事24714/24789/24790；设备 udmac0d1e2 vs bonding_dev_0；共用同一UB物理链路。我方环境全在(target236848/4457/strip128/5-5、master108895、client419091空闲、keys3020、NoF34.93TB、hugepages7168、两端C3282D01、bridge、HBM10501/P0)。顺手发现：①我方target长期400%核busy-poll(1h20m)；②master_active_clients=5只1活+3个0容量段(12515/13411/12699)；③node3 ummu event0x12 917→1273/6s持续；④load node1 12.92/node3 15.85→现跑benchmark数据会被污染。产物 result/receipt/4脚本/5日志。零环境变更。E3-CZ需用户定是否授权停同事(78459/78649/542306/544903+编译)；不授权则等窗口。** |
 | E3-CZ | 2026-11-12 | **node1/3：BAR1 扩到 32G（正确流程）→ 重探针 1088MiB → a/c 16/16** | 已完成（回执已收；BAR1 失败=BIOS preserve_config + 根端口无 Resizable Window；a/c 16/16 仍不可测；其余 6 格无退化） | **用户确认"同事现在不用 GPU，开干"：可停同事 client 78649(持 /dev/nvidia*)+benchmark 542306/544903，按 PID TERM 不用 pkill；不动编译和 master 78459**。承接 E3-CX 预检（硬件支持32GB/echo15=32GiB；正确流程先 rmmod udma_nv_p2p_bridge 再卸 nvidia=E3-CF 524 真因）。①前置：E3-CY 已完成(c/d prefill OK/两端udma0x3)、BAR1当前、/dev/nvidia*使用者、HBM锁②停bench+停1018256→rmmod bridge→unload_nv.sh→echo15→lspci验32G→重载nvidia→reload patched udma(C3282D01)+bridge→重打HBM锁；gate BAR1=32G+nvidia-smi+udma270336+bridge+HBM锁；524则抓dmesg/Resizable BAR停回报不改BIOS③重探针1088MiB→a/c 16/16 **冒烟(短10-30s,不正式3×60s)**+a/c 1/1/1/16/16/1回归对照 E3-CR/CX(a257-260)④约束全µs/log=0/HBM锁/不reboot/node2/4不碰/按PID停/ BAR1可回退。产物 `node1&3测试/E3-CZ_bar1_20261112/`、本地 `node1&3测试\`、台账§136、INDEX R99、五段式回执；~30–40min（不含等 E3-CY）。**2026-11-12 回执：BAR1 失败=BIOS。echo15→-524(-ENOTSUPP)：drivers/pci/setup-res.c preserve_config→-ENOTSUPP；drivers/acpi/pci_root.c BIOS _DSM DSM_PCI_PRESERVE_BOOT_CONFIG 返回0→preserve_config=1→BIOS要求内核不改PCI资源分配。硬件够(BAR1到32GB/resource1_resize=0xffc0/根窗口768GiB)但BIOS锁死。第二风险：根端口20:08.0(HiSilicon)无Resizable Window→解preserve_config也可能扩不上。a/c16/16：1088MiB→FAIL2048，需BAR1≥1088但BAR1=256M BIOS锁死；128MiB探针OK(is_gpu_seg=1)GDR peer正常；S_max=220仍成立。其余6格failed=0：a1/1 260.46(+1.26%)、a1/16 2701.56(−0.44%)、a16/1 2468.91、c1/1 605.54(+90.8%⚠)、c1/16 2990.11(−0.35%)、c16/1 2462.61；c1/1异常=本轮NoF只20 keys(E3-CR 220k)+15s无warmup，非退化(BAR1未变、c1/16 −0.35%)，需220k独占复测。停机按PID：78649 TERM 10s refcnt10→3、542306 TERM 11s、544903退出；78459 master和82271/82272编译未动；我方236848/108895/419091未动。环境恢复：gdr_e3cf/udma270336 C3282D01/bridge/nvidia refcnt=3/BAR1=256M未变/resource1_resize未变/GPU 10501 P0/uburma7/TP_AE=2 TP_LEVEL_ERROR=0。unload_nv.sh未用(漏卸bridge+会stop kubelet打断同事容器)。产物 result/receipt(台账§136/INDEX R99)/15脚本/20日志。待决策：①BAR1走BIOS?(根端口无Resizable Window可能仍扩不上；不开a/c16/16永久不可测)②同事client/benchmark已停、master+编译保留，她要用需自己重启client，是否帮她③c1/1 220k复测现在还是等独占窗口。** |
@@ -7363,7 +7364,15 @@ make -j$(nproc) && cd .. && ./collector.sh   # output/umdk-<commit>-aarch64-linu
 
 ---
 
-# E3-DD（待执行 · 2026-11-16）· node1：BAR1 扩 32G（路 A：BIOS PcieResourceDsm5 → Kernel Reserve）→ 重启 → 32G 验证 → 1088MiB 探针 → a/c 16/16 冒烟
+# E3-DD（已关闭 · 2026-11-16）· node1：BAR1 扩 32G（路 A：BIOS PcieResourceDsm5 → Kernel Reserve）→ 重启 → 32G 验证 → 1088MiB 探针 → a/c 16/16 冒烟
+
+> **回执摘要（2026-11-16，R103/台账§140）：停在 PATCH 阶段，系统零变更（未重启、BAR1 仍 256MiB、Bios 仍 BIOS Reserve）。**
+> **路 A 远程 PATCH 被 iBMC 硬拒**：`PATCH /redfish/v1/Systems/1/Bios/Settings`（body `{"Attributes":{"PcieResourceDsm5":"Kernel Reserve"}}`）→ **HTTP 412 Precondition Failed**（响应体 0 字节、无错误详情）。**排除 ETag**：20 组 `If-Match`（Settings 头 `W/"ec809b7f"`、Bios 头 `W/"4599d88d"`、`dd5af4db`、去 `W/`、带引号、`*`、不带）× 2 种 Content-Type 全 412；Basic 认证 + X-Auth-Token 会话认证、加 `Accept`、`OData-Version: 4.0` 全 412。**决定性对照**：body 换成非法 JSON → **400 Bad Request（482 B 错误体）** → `If-Match` 校验通过、body 正常解析 → **412 是 iBMC 对合法写入的语义性拒绝**。**整条 BIOS 写通道被封**（不是单个属性）：`PcieAspm=L1`（等值）412、`PcieAspm=Disabled`（真改）412、带 BIOS 密码（body `Oem.Huawei.BiosPassword` / header `X-BIOS-Password`）412；`POST Settings.Revoke` **200**（不是全禁，是"提交新配置"被前置条件挡）。排除：`Allow: GET,PATCH`、仅 1 个 Redfish 会话（我方）、Administrator 未锁、`Settings.Attributes=null`、`ResetBiosToDefaultsPending=False`、PolicyConfig 只是 RAS 注册表。
+> **Health=Critical 真因（顺带查清）= 电源**：PSU1、PSU2 都报 Critical；**PSU2 输入 0 V / 0 W（无交流输入）**，整机 975 W 全压 PSU1（234 V）→ **当前无电源冗余**；HealthSummary Critical 1 / Major 2 / Minor 1、HealthLedState=Blinking；SEL（Log1，32 条）本页无 Critical/Warning。**⚠ 重启前建议先查 PSU2 供电/线缆**（今天 15:09 的 ForceOff→On 在同条件下成功过）。
+> **按规格停手**：重启、回连验证、BAR1 验证、1088MiB 探针、a/c 16/16 **全部未做**（BAR1 仍 256MiB，1088MiB 必 err 2048）。
+> **环境核查（全原样）**：20 个容器在跑、3 个登录会话、udma 270336 `C3282D01…`、bridge=loaded、HBM 10501/P0/Enabled、grub index0=GDR；BMC 会话已 DELETE、含凭据/令牌的临时文件已删。**同事 `mooncake_master 78459` 在我方操作前（17:36）已 defunct、18:08 消失，非我方所杀。**
+> **产物**：result_E3-DD.md、receipt_E3-DD.md（末尾带可粘贴台账 §140/INDEX R103）、`e3dd/scripts/` 16 个脚本 + `e3dd/raw/node1/` 16 份原始证据。
+> **下一步（E3-DE）**：A2 Web UI / A3 KVM 都依赖人；改走 **路 B'（运行时模块置 `preserve_config=0`）→ 不重启 resize**，先验证"桥窗口能否扩到 32G"这个 A3/B 共有的未知。
 
 > **用户已授权（2026-11-16 "开干"）：可以 PATCH BIOS + 重启 node1；用户负责通知同事。** 重启硬闸门视为已确认（本任务唯一一次重启）。
 > 承接 E3-DC：路 A 唯一开关 `PcieResourceDsm5`（`./AdvancedMenu/PcieConfiguration`，当前 `BIOS Reserve`）→ 目标 `Kernel Reserve`；走 Redfish `PATCH /redfish/v1/Systems/1/Bios/Settings`。BMC=Huawei Redfish 1.20.1 / iBMC3 FW 26.02.12.18 / BIOS 12.03；**ipmitool 不兼容、无 ipmcget/set**；**Health=Critical ⚠、node1 有挂死前科**。
@@ -7416,3 +7425,88 @@ make -j$(nproc) && cd .. && ./collector.sh   # output/umdk-<commit>-aarch64-linu
 - **绝不 `rmmod udma`**；不 kill 同事；不拉起/停同事容器；node2/4 不碰；全 µs；log=0；不改源码。
 - 产物 `node1&3测试/E3-DD_bar1_32g_20261116/`；本地 `D:\gds性能\node1&3测试\`；台账 §140；INDEX R103；五段式回执；预计 **~50–70 min**（含重启+恢复）。
 - 必给：SEL 摘要、PATCH 前后 Bios 值、重启时间线/回连耗时、**BAR1 前后 lspci**、resize 返回值、nvidia/bridge/HBM 锁状态、**1088MiB 探针结果**、**a/c 16/16 冒烟数据（µs 全分位）**、a/c 1/1 回归、回退记录、环境终态。
+
+---
+
+# E3-DE（待执行 · 2026-11-16）· node1：不重启解开 preserve_config 门（运行时模块）→ 卸 nvidia → resize BAR1=32G → 1088MiB 探针 → a/c 16/16 冒烟
+
+> 承接 E3-DD：iBMC Redfish 的 BIOS 写通道被 412 语义性硬拒，**路 A 远程不可用**（Web UI/KVM 仍可，但需人）。改走 **路 B'**：用最小内核模块在运行时把 `pci_host_bridge->preserve_config` 置 0（只影响后续 PCI 资源操作），然后照常做 `echo 15`。**不重启、不改 BIOS（保持 BIOS Reserve）、不改内核镜像、绝不 `rmmod udma`。**
+> **为什么先 B'**：A3（KVM 改 BIOS）要人值守，且固件大概率仍只给 256M（照样要运行时 resize）；B（重编内核）代价更大。B' 25–40 min 就能验证 **"桥窗口能否扩到 32G"** 这个 A3/B 共有的关键未知；失败也只是回到原状（模块可卸、不重启）。
+
+## 〇、前置（不全过就停）
+
+- `uname -r` = `6.6.0-gdr_e3cf`；`/lib/modules/$(uname -r)/build` 存在，且 **`$build/.config` 与 `/boot/config-$(uname -r)` 一致**（`diff -q`；不一致 → 停，不编译——结构体偏移必须与运行内核一致）。
+- 记录：`lspci -vv -s 27:00.0`（BAR1=256MiB）、`resource1_resize=0xffc0`、`/dev/nvidia*` 使用者（`sudo -n fuser -v`）、nvidia refcnt、HBM 10501/P2、我方 client/target/master/keys（NoF 220k 在 node3；node1 的 memory 段/3000 keys 应还在）、同事进程（只记录）。
+- 若 `/dev/nvidia*` 被**我方** bench/client 持有 → 按 PID 停我方进程（允许）；被同事进程持有 → 停并回报。
+
+## 一、编译 + 加载最小模块（置 preserve_config=0）
+
+- 源码 `pci_unpreserve.c`（放 `node1&3测试/E3-DE_unpreserve_20261116/src/`）：
+```c
+#include <linux/module.h>
+#include <linux/pci.h>
+
+static int __init pci_unpreserve_init(void)
+{
+	struct pci_dev *pdev;
+	struct pci_bus *b;
+	struct pci_host_bridge *host;
+
+	pdev = pci_get_domain_bus_and_slot(0, 0x27, PCI_DEVFN(0, 0));
+	if (!pdev) {
+		pr_err("pci_unpreserve: 0000:27:00.0 not found\n");
+		return -ENODEV;
+	}
+	for (b = pdev->bus; b->parent; b = b->parent)
+		;
+	host = to_pci_host_bridge(b->bridge);
+	pci_dev_put(pdev);
+	if (!host) {
+		pr_err("pci_unpreserve: host bridge NULL\n");
+		return -ENODEV;
+	}
+	pr_info("pci_unpreserve: preserve_config %u -> 0\n", host->preserve_config);
+	host->preserve_config = 0;
+	return 0;
+}
+static void __exit pci_unpreserve_exit(void)
+{
+	pr_info("pci_unpreserve: exit (preserve_config stays 0 until reboot)\n");
+}
+module_init(pci_unpreserve_init);
+module_exit(pci_unpreserve_exit);
+MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("clear pci_host_bridge.preserve_config (test harness)");
+```
+- Makefile：`obj-m := pci_unpreserve.o`；`make -C /lib/modules/$(uname -r)/build M=$PWD modules`。
+- `modinfo pci_unpreserve.ko` 核对 **vermagic=`6.6.0-gdr_e3cf`** 一致；`insmod ./pci_unpreserve.ko`；若报 **Invalid parameters (-22) + dmesg BTF 校验**（E3-CW 同款）→ `objcopy --remove-section=.BTF pci_unpreserve.ko` 再 insmod。
+- **gate**：dmesg 出现 `pci_unpreserve: preserve_config 1 -> 0`（或模块加载成功且打印原值）；失败 → 停，回报（不猜）。
+
+## 二、resize BAR1 → 32GiB（只卸 bridge + nvidia）
+
+- `rmmod udma_nv_p2p_bridge`（叶子，安全）→ 按序卸 nvidia（`nvidia_peermem/nvidia_drm/nvidia_modeset/nvidia_uvm/nvidia`）→ `lsmod` 全无、refcnt=0。
+- `echo 0 > /sys/bus/pci/devices/0000:27:00.0/resource1_resize`（释放）→ `echo 15 > ...`（=32GiB）。
+- **gate**：`lspci -vv -s 27:00.0` **BAR1=32GiB**；记录 `cat .../27:00.0/resource`、桥窗口、dmesg。
+- 失败分支：
+  - `-524 ENOTSUPP` 仍现 → 还有别的 gate（记录 dmesg；停，回报）。
+  - `-ENOSPC / EIO`（桥窗口扩不动）→ 记录 `lspci -vv -s 20:08.0` 窗口 + dmesg；**停，回报**（不手工改桥、不重启）。
+- 成功后：重载 nvidia + `insmod` bridge → dmesg `GPU P2P ops registered`；`nvidia-smi` 正常；重打 HBM 锁 `-pm 1 -lmc 10501` → 10251/P2；`rmmod pci_unpreserve`（可选，flag 保持 0 直到重启）。
+
+## 三、探针 + a/c 16/16（未重启，环境应完好）
+
+- 1088MiB `is_gpu_seg=1` 探针（复用 E3-CT 脚本）→ **期望 OK**；失败按 128/512/1024/1088 记新 S_max。
+- 确认我方环境：target/master（node3 未动）、client（node1 进程若被停则重启）、memory 段 3000 keys（不在就重建+prefill）、NoF 220k keys 在。
+- **a/c 16/16 冒烟（10–30s，不正式 3×60s）**：shim+hook、log=0、capsule=urma+4457、c `reg_mode=peer`；记 setup 成功/failed=0/avg/P50/P90/P99/P99.9/Pmax（µs）。
+- 回归：a/c 1/1 各 1×10s（E3-CR **a 257.21 / c 317.29**；c 必须 220k keys）。
+
+## 四、回退
+
+- `rmmod pci_unpreserve`；`preserve_config` 保持 0 直到重启（无害；A3/KVM 方案不受影响）。
+- BAR1 回 256MiB：卸 nvidia → `echo 0` → `echo 8`（=256MiB）→ 重载 nvidia。
+- 不重启、不改 BIOS、不换内核；模块源码+ko+Makefile 归档并记 md5（**测试 harness，不进 Mooncake 仓**）。
+
+## 五、约束 / 产物
+
+- **绝不 `rmmod udma`**；不 reboot；不 kill 同事；不改 BIOS；node2/4 不碰；全 µs；log=0。
+- 产物 `node1&3测试/E3-DE_unpreserve_20261116/`；本地 `D:\gds性能\node1&3测试\`；台账 §141；INDEX R104；五段式回执；预计 **~25–40 min**。
+- 必给：模块编译/加载证据（vermagic、dmesg 原值→0）、resize 返回值、**BAR1 前后 lspci**、nvidia/bridge/HBM 锁状态、**1088MiB 探针结果**、**a/c 16/16 冒烟数据（µs 全分位）**、a/c 1/1 回归、回退记录、环境终态。
