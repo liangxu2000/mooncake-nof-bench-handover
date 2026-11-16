@@ -9,6 +9,11 @@
 
 > **⚠ 产物目录铁规（2026-11-12 用户重申，优先级最高）：node1/3 第二组的 ALL 产物、结果、台账 §、INDEX 条目、脚本、日志——一律写 `node1&3测试`（本地 `D:\gds性能\node1&3测试`）。`第二组测试环境` 目录名已停用，禁止再写入或引用。若台账/INDEX 文件当前在旧目录，先迁到 `node1&3测试` 再登；白名单只放行 `node1&3测试` 时就用它。历史任务书里所有 `第二组测试环境\...` 路径一律按本规覆盖。**
 
+> **⚠ node1 重启后必做铁规（2026-11-16，优先级同产物铁规）：任何整机重启/冷启动/挂死恢复后，先做这两项，否则 GDR/16/16 测试结果无效——**
+> **① HBM 锁：`sudo nvidia-smi -pm 1 && sudo nvidia-smi -lmc 10501`，验 `clocks.mem=10251`；**
+> **② BAR1 32G 恢复：`insmod pci_unpreserve`（验 dmesg `preserve_config 1 -> 0`）→ `rmmod udma_nv_p2p_bridge` → 卸 nvidia（`nvidia_peermem nvidia_drm nvidia_modeset nvidia_uvm nvidia`）→ `echo 0`/`echo 15 > /sys/bus/pci/devices/0000:27:00.0/resource1_resize` → 验 BAR1=32G（`0x800800000000`）→ 重载 nvidia + `modprobe udma_nv_p2p_bridge`（验 `GPU P2P ops registered`）→ 重打 HBM 锁。**
+> **红线：绝不 `rmmod udma`（挂死 node1）；不用 `unload_nv.sh`（漏卸 bridge + stop kubelet）。完整步骤：`node1&3测试\node1重启后必做_BAR1_32G与HBM锁_20261116.md`；脚本：E3-DE 产物 `e3de/scripts/`。**
+
 ## 协作约定
 
 1. **方向单向**：本文件只由开发指挥 Agent 更新并 push；测试执行 Agent 只 pull，不 push。
