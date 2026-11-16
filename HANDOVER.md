@@ -210,6 +210,7 @@
 | E3-CB | 2026-11-12 | **切 netlab 内核 + 加载现成 GDR 模块：node3 先、node1 后**（用户已确认可重启 node1；node1/3 独占） | 已完成（回执已收；内核+bridge 成功，b/NoF-host 通，a/c/d 仍 blocked） | 前置：核实 node1/node3 无他人进程/端口（独占但仍先查）；记录当前内核、grub 默认/索引、/boot、udma srcversion、target/master PID、vfio 盘、hugepages。**A. node3（先）**：一次性启动 netlab（保留基座默认）→ `uname -r` 必须 netlab → 按依赖加载 netlab 模块树 + 全量 `udma.ko`（**不加载 bridge**，无 GPU）→ `lsmod` 看 udma 270336、srcversion F3D2…（非 stub 673E…）→ 重启 target/master/client → b 1/1 + NoF-host 10s 冒烟 failed=0。**B. node1（后，A 成功才做）**：一次性启动 netlab → `uname -r` 确认 → `modprobe nvidia`（若未自动，nvidia-smi 必须正常）→ 加载全量 udma + bridge（按依赖）→ `lsmod` 看 udma 270336 + udma_nv_p2p_bridge → `/dev/uburma` → 重启 target/master/client → b/NoF-host 回归 → a/c/d 1/1 100-key 10s 冒烟 failed=0。**回退**：基座内核保持默认；netlab 失败就重启回基座；模块加载失败就 rmmod/重启；记录全部命令/PID/端口/模块/md5。不改源码/不改 target/strip；node2/4 不碰；异常保留。产物 R75 + 台账 §111 + INDEX + 五段式回执。**2026-11-12 回执：两节点均切到 6.6.0-netlab_pcie_ub_compat+（一次性启动、默认仍基座）；全量 udma 270336/srcversion F3D2CA85B0F488DE71E3062（原 stub 262144/673E…）；node1 bridge 18C54A1F… 已加载、dmesg `UDMA: GPU P2P ops registered by udma_nv_p2p_bridge`；nvidia 575.64.05 自动加载+peermem；/dev/uburma 7。b 1/1 10s 26,528 q/10.35 GiB/s/avg 377.45（E3-BD 26,428/10.32/378.45，≤0.8%）；NoF-host 21,309 q/8.32 GiB/s。a/c 仍 `Failed to register segment … Unknown error 2048 → register_buffer failed ret=-600`；d `cuMemGetHandleForAddressRange rc=801 → peermem → -2048`。**所有 GPU 缓冲路径都倒在 URMA GPU 段注册，所有 host 缓冲路径全通** → 缺口收敛到一条路径，不是 NoF/内存差异；按规格停手。途中阻断：netlab 下 PCIe NVMe 无 IOMMU 组（IORT don't map）→ vfio probe -22，用 `vfio enable_unsafe_noiommu_mode=Y` 绑定 5 盘（内核 taint、无 DMA 隔离，正式跑分前需评估/开 SMMU）。前置发现两节点非独占（node1 他人 HA master 773%/client 228%/容器/25 会话；node3 nvmf 598%/client 253%/14 会话）→ 授权后按 PID 精确 kill、未用 pkill；`kill -0` 对 root EPERM 误判已改用 `sudo -n kill -0`；node1 重启把他人 vfio 2b,91,92,a1,a2 释放回 nvme、未恢复。node3 target e7440ae0:4457/Raid0 strip64 num_blocks 75,014,659,200；master 50056/9006/8086；client 50156；hugepages 7168。段端点易错：client TE RPC :15793 vs master 登记段端点 141.61.84.149:13550。未做 16/1/16/16/8MB/strip。回退：基座仍是 grub 默认，reboot 即回。产物 R75 37 文件/395KB；台账 §111；INDEX R75。** |
 | E3-CD | 2026-11-12 | **定位 a/c/d 的 2048：GPU 段注册路径（只换运行时库 + 抓 dmesg）** | 已关闭（回执已收；4090D 无 P2P 硬阻塞，a/c 物理不可达；d 可救） | ①只读指纹：node1/node4 bench ldd 的 liburma 解析+md5、RPATH、找 netlab lib（36b0ab10）；②a 1/1 100-key 10s 冒烟抓 dmesg 前后 + `is_gpu_seg=` 日志行；③进程级 LD_LIBRARY_PATH netlab lib A/B。不编译/装驱动/rmmod/重启/改 grub；node2/4 只读。产物 R77 + 台账 §113 + INDEX + 五段式回执。**2026-11-12 回执：2048 两层叠加。①运行时库：node1 RPATH 指的 UMDK_netlab/lib 目录不存在 → ldd 落 /usr/lib64 老版（5c021f7f，is_gpu_seg 0）→ 普通 pin_user_pages_fast（-14/-12）。②GPU P2P：换 netlab 库（36b0ab10，is_gpu_seg=1，日志行证明二进制 OK）后正确进 bridge P2P，但 nvidia_p2p_get_pages 返回 -22 EINVAL；ABAB 四轮复现；nvidia-smi Peer Type N/A、topo GPU↔NIC 全 SYS。判定命中§三第 2 行：4090D GeForce 无 PCIe P2P，a/c 直写物理不可达（对照 node4 V100 可用）。已停手，未改内核/编译/kill；node4 只读；服务保持 E3-CB 终态。** **指挥侧源码复核：d 与 a/c 不同——staging 数据面 NIC 不碰 GPU，物理不需 P2P；被挡是 bench EnsureNofPools（stress_cluster_bench.cpp:1971/1993/2021）在 staging 下仍把 GPU 整池注册到 NoF（→-2048→return false），该注册只对 GDS 必要。host 暂存池由 real_client:4227/5967 独立注册（E3-N，不受 bench flag 影响）；UB staging 走 registerLogicalDeviceRegion（ub_transport.cpp:502，逻辑注册）→ b 能通的原因。零代码改动解法：d 跑 --nof_whole_pool_register=false（或 MC_NOF_WHOLE_POOL_REGISTER=0）跳过 GPU 注册；启动闸门 NofGpuLayoutSupported(4MB,128KB,32MB,false) 全 64KiB 对齐通过。待 E3-CE 冒烟实证（已派）。** |
 | E3-CE | 2026-11-12 | **node1/3：d staging 冒烟（`--nof_whole_pool_register=false` 跳过 GPU 整池注册）** | 已完成（回执已收；d 零代码改动打通） | 承接 E3-CD：a/c 物理不可达不碰；d 是 staging 不需 P2P，被 bench EnsureNofPools 多余 GPU 注册挡住，零代码改动可解。主臂 A：沿用 R75 d 1/1 100-key 冒烟命令+env，唯一加 `--nof_whole_pool_register=false`，开 timing，2×10s；判据 failed=0 + cuda_io=0 + host_io>0 + effective_path=nof/staging + 恒等式闭合。对照臂 B：同 A + 进程级 LD_LIBRARY_PATH=/home/yin/gdr/UMDK_netlab/lib（sudo 下 ldd 复核），1×10s，证库无关。A/B 都不通就抓日志+dmesg 停并回报，不猜/不改源码。不改源码/编译/装驱动/rmmod/重启/grub//usr/lib64/全局 symlink；不 kill 他人；node2/4 不碰；不修 lib 路径/不跑 a/c/16 并发/8MB/全量；进程级 flag/env 无持久改动。产物 `第二组测试环境/E3-CE_d_staging_flag_20261112/`、本地 `node1&3测试\`、台账§114、INDEX R78、五段式回执；10–15 min。**2026-11-12 回执：d 零代码改动打通。A（flag=false 老库）2×10s + B（flag=false netlab 库）1×10s，3 轮 failed=0、6.33–6.35 GiB/s。计数器 cuda_io=0/host_io>0/accelerator=0/dmabuf=0/peer_memory=0/gds 0 次 → 确凿 host staging；恒等式 −1.00/−1.01/−1.10 闭合。effective_path=nof/urma/cuda-domain 与 nof/staging 等价（指挥侧核实 stress_cluster_bench.cpp:2759-2762：NoF+use_gpu_buffer 一律打此粗标签，不分 staging/GDS；规格预期名写错，路径以计数器为准）。数据：get 334.5/335.8/338.8、scatter 174、copy_us 170.6/171.0（4090D PCIe4.0≈V100 336 一半）、total 509.7/511.3/514.4、Avg 617/614.7（含 query~107）、P50 483/491。A≈B（差≤1.2µs）→ 与库无关。get 335 高于 node2 176 因 node3 strip64+2N0+3N2；若改 strip128+全N0 d 有望 ~460µs（后续）。风险：首跑脚本 bug（sudo $HOME=/root）改绝对路径修复；yin cmake -j308 偶占 1 核（单核 9%/全机 0.03%）按阈值不停手、绑 N0、未 kill；段端点 :13550。零变更自检通过，仅进程级 flag/env 无需回退。未跑 a/c/16 并发/8MB/全量、未做永久 lib 改动。** |
+| E3-DI | 2026-11-16 | **node1/3：盘位与 NUMA 对齐全量实验（Stage 0–6，无人值守 stop at nothing）** | 待执行 | 用户："全跑了吧…stop at nothing…下班后一定要跑完，明天来就能看到结果"；结果放 `关键结果\盘位与NUMA对齐测试\`（原 `位置测试` 改名）。设计=`盘位置与target对齐实验_node1_3版_20261116.md`。①Stage 0 只读预检（盘 BDF/root port/NUMA、N2 盘可用、udmac1d1e2、target 大页 NUMA、client 切换、GPU numa_node、spdk_nvme_perf 冒烟、控制臂 2×30s）；②Stage 1 socket 2×2（C1–C4 裸测 2×30s）；③Stage 2 盘组混合 5 臂；④Stage 3 strip 4 臂；⑤**Stage 3b 盘×strip 交叉（N0+64K、N2+128K）**；⑥Stage 4 reactor 2 臂；⑦Stage 5 Mooncake 收口（裸测最优+C1 两配置 × c/d 4 格 3×60s + prefill；BAR1/HBM 前置）；⑧Stage 6 可选。**无人值守/白名单：绝不等待用户；被拦立即换路（已用过命令→已有脚本→py -3→标 BLOCKED 跳过继续）；每臂立即写盘；不 kill 同事；绝不 rmmod udma；整机重启默认禁止（仅 SSH 失联挂死允许 BMC 冷启动并记录）。** 优先级：Stage 0→1→3b→5→2→3→4→6。产物 `关键结果\盘位与NUMA对齐测试\` 结果 md+arms.csv+raw+meta+blocked；台账§145、INDEX R108；~4–5h。 |
 | E3-DH | 2026-11-16 | **测试侧：更正 E3-CS 填表——c 1/1 回退 E3-CR，改采用 c 16/1=E3-DF** | 已完成（回执已收；两行 24 格改完、其余 15 行未动、md 同步、md5 b84007d7…） | 用户更正 **"说错了，是采用 c 16/1，不要采用 c 1/1"**。①xlsx 只动 2 行：**行 11 c 1/1 从备份 `.bak_20261116_1916` 还原 E3-CR（N=317.29，不整表还原）**；**行 13 c 16/1 换 E3-DF（Avg 2463.84/P50 2424.83/P99 4063.23/Max 6789.47/U 25.36/queries 389794，1×60s 单轮；其余列从原始日志按本表口径取；E3-CM 5728.14 移备注）**。②md：c 1/1 回 317.29（保留 E3-DF 467.53 观察行、未采用）；c 16/1 更新 2463.84 + "E3-CM 长尾不复现"。③其余 15 行/结构/口径 sheet 不动；新备份+前后 md5+回读。指挥侧裁定 E3-CS 的 3 处微差以实填为准（a 16/16 39389.55、c 16/16 39626.14），不再改。纯整理不重跑不碰 node1/3；`py -3`。产物 `关键结果\`、台账 §144、INDEX R107、五段式回执；~10min。 |
 | E3-DG | 2026-11-16 | **node1/3：1/1 四格复核 3×60s + c/d 1/1 拆解（定因 c 1/1 +47.4%）** | 挂起（用户更正：不采用 E3-DF c 1/1；本任务仅诊断用，不自动改表） | 承接 E3-DF：c 1/1 单轮 467.53µs vs E3-CR 317.29（+47.4%），但 c 16/16/16/1 与 a 持平→疑单线程路径。①前置 BAR1=32G/HBM 10251/P2/keys 223k **不重灌**；②a/b/c/d 1/1 各 3×60s clean（顺序 c→d→a→b），全分位 µs+failed+GiB/s；③c/d 1/1 各 1×60s 开 timing 拆解（query/read/total+get/scatter/copy；transfer/submit/wait 该 build 不输出），对照 E3-CO，残差；④target 只读证据（reactor CPU/bdev_get_iostat/TP 计数）+同事 CPU 记录；⑤可选 c/d 1/16 各 1×60s 看同向。判定：c≈320=单轮方差（正式仍用 E3-CR）；c≈467 且 d/a/b 不动=c 单线程 GDS 路径；c/d 同慢=NoF 通用；a/b 也慢=环境负载。不重启/绝不 rmmod udma/不改 BIOS/不 kill 同事/node2·4 不碰。产物 `node1&3测试/E3-DG_1to1_recheck_20261116/`、台账 §143、INDEX R106、五段式回执；~25–35min。 |
 | E3-DF | 2026-11-16 | **node1/3：补齐 a/c 16/16 正式数据（3×60s；含 c/d 220k keys prefill）** | 已完成（回执已收；a/c 16/16 正式三格全 failed=0、c 16/1 长尾不复现；新问题 c 1/1 +47.4% → E3-DG） | **2026-11-16 回执**：独占判定=**未确认独占但无可测影响**（同事 client 231769 403.5%/master 231577 127.3%；不同 UB 设备 udmac1d1e2/192.168.84.x vs 我方 udmac0d1e2/141.61.84.x；我方绑核 CPU0–3 idle 88/94/99/100%；CV a 0.0003%/c 0.0001%）。**a 16/16（µs）**：3 轮 Avg 39389.55/39389.62/39389.49；汇总 Avg 39389.67、P50 39766.00、P99 39766.00、Max 39957.67、25.38GiB/s、queries 73176、failed=0、极差 0.13µs（P90/P99.9 未打印）。**c 16/16（µs）**：R1/R2/R3 Avg 39629.44/39621.09/39627.90；汇总 Avg 39626.00、P50 39846.00、P90 40894.33、P99 41418.67、P99.9 42911.67、Max 42922.00、25.23GiB/s、queries 72733、failed=0；**cuda_io_submitted/success 12.41M、failed=0、peer_memory=1、host_io=0**。**16/16 Avg=每 batch 64MiB**。**【重大】c 16/1 长尾不复现**：10.98→25.36GiB/s（+131%）、P99 53477→4063.23µs（−92%）、与 a 16/1 持平（−1.97%）。**新问题**：c 1/1 单轮 467.53µs（P50 524.29/P99 1081.34）vs E3-CR 317.29（+47.4%），但 c 16/16/16/1 均与 a 持平→瓶颈在单线程路径，待 E3-DG 3×60s 复核+拆解。prefill 220k/859.38GB/526s/10.55GiB/s；target 1091515 strip128 5/5、TP_LEVEL_ERROR=0；终态 BAR1 32G/HBM 锁/无重启无 BIOS 变更。产物 e3df。 | 用户 2026-11-16："16/16 现在能测了，把之前没测的结果测出来"，并确认 **"现在是独占"→按独占窗口跑正式数（仍记录 /proc CPU 增量证据，出现他人 >5% 单核按规范停/标）**。只补 a 16/16、c 16/16（其余 14 格已有正式值不动）。前置：**BAR1 必须仍 32GiB**（回 256M 就先按 E3-DE 脚本重做）；HBM 锁 10251/P2；协议同 E3-CR/E3-CM（4MB/warmup45/start0/16/16 sleep50/clean sample0/log=0/shim+hook/capsule=urma+4457/c reg_mode=peer）。①前置 + **独占判定（回执第一行）**，有干扰也照跑但标口径；②a 16/16 3×60s（先用 memory 3000 keys）；③**c/d prefill 220k keys（~880GiB、~9min）**；④c 16/16 3×60s（cuda_io>0）；⑤可选 c 1/1 1×60s 交叉核对 E3-CR 317.29。**16/16 Avg=每 batch 64MiB 延迟**；P99.9 不打印就标。不重启/绝不 rmmod udma/不改 BIOS/不 kill 同事。产物 `node1&3测试/E3-DF_ac_1616_20261116/`、台账 §142、INDEX R105、五段式回执；~30–40min。 |
@@ -7688,3 +7689,87 @@ MODULE_DESCRIPTION("clear pci_host_bridge.preserve_config (test harness)");
 - 纯整理，不重跑、不碰 node1/3；单位 µs；不改结构；用 `py -3`。
 - 产物 `关键结果\` xlsx + md + 备份；台账 §144；INDEX R107；五段式回执；~10 min。
 - 必给：两行改前/改后逐格值；其余 15 行未变证据；回读校验；前后 md5；c 16/1 用的 E3-DF 原始行（≤5 行）。
+
+---
+
+# E3-DI（待执行 · 2026-11-16 夜跑，无人值守）· node1/3：盘位与 NUMA 对齐全量实验（Stage 0–6，stop at nothing）
+
+> **用户 2026-11-16 指令（原话）**："全跑了吧，给测试agent派任务，要求它 stop at nothing……我下班后它一定要跑完，我明天来了就能看到结果"。**无人值守夜跑，必须跑完；宁可少跑臂，不可停。**
+> **结果目录（测试侧）**：`测试相关资料\node1&3测试\关键结果\盘位与NUMA对齐测试\`（用户会把现有 `位置测试` 改名为它；**只建这一个目录，不要建两个**）。
+> **设计定稿**：本地 `node1&3测试\盘位置与target对齐实验_node1_3版_20261116.md`（若测试侧没有，以本任务书为准）。三个硬要求：**裸测必须端到端 `spdk_nvme_perf` 读到盘**（纯 UB 的 `urma_perftest` 只作链路控制臂）；**必须有盘×strip 交叉臂**；**控制臂用 node1/3 本机现测值**。**GPU 在 S0（待 Stage 0 直读 `numa_node` 确认）→ Stage 5 要跑“裸测最优”和“C1 全 S0”两套。**
+
+## 〇、无人值守 / 沙箱白名单（最高优先级，先读）
+
+- **绝不等待用户点击/确认**。任何命令遇到"需要添加到白名单"、交互确认、密码提示 → **立即换路，不许停**。
+- 换路顺序：① 用前几轮已成功用过的命令/脚本（`ls/cat/grep/ps/ss/lspci/numactl/nvidia-smi/lsmod/modprobe/rmmod/insmod/echo/tee/sudo -n`、e3de/e3df/e3cs 下已有脚本）；② 测试侧已有二进制/脚本（`spdk_nvme_perf`、`urma_perftest`、target/master/client 启动脚本）；③ `py -3`（注意本机 `python` 是 Store 占位符）；④ 仍不行 → 该子步标 **BLOCKED**，跳过该臂/该阶段，**继续下一个**，写进 `blocked.md`。
+- 全部 `sudo -n`；全非交互；不 `pkill/killall`（只按 PID）；**不 kill 同事进程**；不改源码；node2/4 不碰。
+- **红线：绝不 `rmmod udma`**（挂死 node1）。
+- **整机重启默认禁止**；唯一例外：SSH 完全失联且判定 OS 挂死 → 允许按 E3-DA 方式 **BMC ForceOff→On 冷启动**恢复并记录时间线；恢复后按 `node1重启后必做_BAR1_32G与HBM锁_20261116.md` 恢复 BAR1/HBM。除此之外不重启。
+- **每完成一臂就写盘**（`arms.csv` 追加一行 + 原始日志落 `raw/` + `blocked.md` 记录），不许攒到最后。
+- 失败重试 1 次；仍失败 → 标 FAILED，继续。异常轮保留日志，不静默剔除。
+- 预计 4–5 h；时间不够时的优先级：**Stage 0 → Stage 1（4 臂）→ Stage 3b（2 臂）→ Stage 5（两配置）→ Stage 2 → Stage 3 → Stage 4 → Stage 6**。
+
+## 一、Stage 0：只读预检（30–40 min，不碰盘/不重建）
+
+- **盘**：`lspci -tv`、`ls -l /sys/block/nvme*`、`readlink -f /sys/block/nvmeXn1/device`、每块盘 root port/NUMA/当前驱动（nvme/vfio）/是否同事占用；**列出 node3 可用的 N2 盘 ≥5 块**（预期 `91,92,a1–a4`，以实测为准）。
+- **NIC**：`ls /dev/uburma`；`udmac1d1e2` 两端存在且端口 ACTIVE。
+- **target**：PID/参数（`--lcores`、`-s`、`--huge-dir`、`-N`）、hugepages 7168 的 NUMA 分布、4457/listener、NoF 注册。
+- **client（node1）**：bench 绑核、NIC；能否切 `udmac1d1e2` + 绑 N2（154–237）。
+- **GPU NUMA 直读**：`cat /sys/bus/pci/devices/0000:27:00.0/numa_node`（预期 0）、`.../0000:20:08.0/numa_node`；不是 0 则改写 Stage 5 分析。
+- **裸测工具 10 s 冒烟**：`spdk_nvme_perf -q 1 -o 4M -w read -t 10 -c 0x1 -LL --iova-mode=va -r 'trtype:URMA adrfam:IPv4 traddr:141.61.84.149 trsvcid:4457 subnqn:<nqn>'`；失败记录命令/报错，找 SPDK `urma_perf` 端到端替代；都不可用 → 降级用 Mooncake d 1/1 筛选（换盘后要重灌 220k，记录时间成本）。
+- **控制臂基线**：全 N0（`21,22,28,29,2a`）+ strip128 + IODie0 + reactor 现状，端到端裸测 **2×30 s**；作为所有阶段 control。**必须是本机现测值。**
+- 输出：盘 BDF/root port/NUMA 表、可用 N2 盘清单、NIC 状态、target 参数、裸测可用性、控制臂基线；缺项标 BLOCKED。
+
+## 二、Stage 1：socket 对齐 2×2（裸测，固定 strip128、5 盘）
+
+| 臂 | 盘/内存 | target NIC | client |
+| --- | --- | --- | --- |
+| C1 | 全 N0 / N0 | `udmac0d1e2`（IODie0） | CPU N0 + `udmac0d1e2`（控制臂） |
+| C2 | 全 N2 / N2 | `udmac1d1e2`（IODie1） | CPU N2 + `udmac1d1e2` |
+| C3 | 全 N0 / N0 | `udmac1d1e2` | CPU N2 + `udmac1d1e2` |
+| C4 | 全 N2 / N2 | `udmac0d1e2` | CPU N0 + `udmac0d1e2` |
+
+- 每臂端到端裸测 **2×30 s**；C1 前后各一次控制臂；漂移 >2% 重跑本阶段。
+- 若 mem_numa 绑不到 N2 → C2/C4 标 BLOCKED，只做 C1/C3（结论写"只测网卡跨 socket"）。
+
+## 三、Stage 2：盘组混合（裸测，最佳对齐，strip128）
+
+- 全 N0、4N0+1N2、3N0+2N2、2N0+3N2、全 N2；每臂 2×30 s；**盘数固定 5**，记录 BDF/root port。
+
+## 四、Stage 3：strip 扫描（裸测，最佳盘组）
+
+- 64/128/256/512K；每臂 2×30 s；记录 iostat `ops/req`（4MB/strip：64K→64、128K→32、256K→16、512K→8）与 5 盘分布；**不跨 strip 比 ops/req**。
+
+## 五、Stage 3b：盘×strip 交叉（关键，2 臂）
+
+- **全 N0 + strip64** 与 **全 N2 + strip128**（若 Stage 2/3 结果更极端，可取“最佳盘组×最差 strip”与“最差盘组×最佳 strip”）；每臂 2×30 s。目的：把当初"336.8→181.9"的盘因素和 strip 因素拆开。
+
+## 六、Stage 4：reactor NUMA（裸测，最佳数据路径）
+
+- reactor 放 N0 / N2；只重启 target、不重建 RAID0；每臂 2×30 s。
+
+## 七、Stage 5：Mooncake 收口（两配置）
+
+- 配置①裸测最优；配置②**C1 全 S0**（若两者相同只跑一次）。GPU 在 S0，GDR 可能跨 socket，必须对比。
+- c/d：1/1、1/16、16/1、16/16，各 **3×60 s**；c `reg_mode=peer`、d `flag=false`；**每次重建 RAID0 后重新 prefill 220k**。
+- 前置：HBM 锁 `10251`；**c/d 16/16 需 BAR1 32G**（重启过则按 `node1重启后必做` 恢复；模块不可用 → 只跑 1/1、1/16，记录）。
+- 对照：当前全 N0+128K（d 1/1 transfer 181.9、总 448.79 µs，E3-CR）。
+
+## 八、Stage 6（可选，仅前面全部完成且时间够）
+
+- 若 16/16 仍 12.69 GiB/s：试 IODie1 / 其他 P 口 / qpair，验证是否单 IODie/端口上限。
+
+## 九、每臂记录（`arms.csv` 一行一臂）
+
+- 配置：`disk_socket`（盘 BDF/root port）、`strip`、`mem_numa`、`nic_iodie`、`reactor_numa`、`client_align`（CPU 核段/NIC/GPU 是否同 socket）、target/client PID/端口/NQN。
+- 裸测：avg/P50/P90/P99/P99.9/Pmax（µs）、GiB/s、completed、错误数、target bdev iostat（ops/req、5 盘分布）、reactor CPU。
+- Mooncake：query/read/total + get/scatter/copy（该 build 输出什么记什么；transfer/submit/wait 不输出就写"未输出"）、恒等式残差、failed、GiB/s。
+- 环境：load、同事进程 `/proc` CPU 增量、独占判定（回执首行给结论）。
+- 异常：原始日志保留，注明原因。
+
+## 十、产物 / 回执
+
+- 测试侧 `关键结果\盘位与NUMA对齐测试\`：`结果_盘位与NUMA对齐_20261116.md`（一页结论 + 全表 + 每阶段控制臂漂移）、`arms.csv`、`raw/`、`meta.md`、`blocked.md`。
+- 台账 §145；INDEX R108；五段式回执。
+- 必给：**盘 socket / strip / NIC IODie / reactor / mem NUMA 各自的影响（µs 与是否显著）**；推荐配置；与 E3-CR/E3-CL 的对照；哪些臂被 BLOCKED 及原因；Stage 5 两配置对比；对 4/8MB 全量测试的建议。
+- 预计 **4–5 h**（Stage 0 30–40 min + Stage 1–5 3.5–4 h）；无人值守，**结果先落盘再继续**。
