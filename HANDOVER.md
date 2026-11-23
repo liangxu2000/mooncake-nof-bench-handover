@@ -7727,6 +7727,7 @@ MODULE_DESCRIPTION("clear pci_host_bridge.preserve_config (test harness)");
 
 - **盘（node2）**：`lspci -tv`、`ls -l /sys/block/nvme*`、`readlink -f /sys/block/nvmeXn1/device`、`lspci -s <BDF> -vv | grep -E 'Root Port|NUMA'`、`lsblk -o NAME,SIZE,MODEL,SERIAL`。列出每块盘的 root port / NUMA / 当前驱动（nvme 还是 vfio）/ 是否有人占用；确认 **N0 有 5 块**（预期 `21,22,28,29,2a` → `pci0000:20`）、**N2 有 ≥5 块**（预期 `91,92` → `pci0000:90`；`a1–a4` → `pci0000:a0`）。**盘归属不明或盘上有别人的数据 → 该盘不绑，标 BLOCKED。**
 - **NIC**：`ls /dev/uburma`、`ip -br link`、URMA 端口状态（沿用 E3-CY/E3-DA 的计数命令）。**node2 与 node4 都要看：`udmac0d1e2` 与 `udmac1d1e2` 是否都暴露、IODie1 的 P 口是否 ACTIVE、被谁连着。** 这是 C2/C3 的命门。
+- **UB 设备占用（本任务最容易被忽略的一条）**：`udmac0d1e2` 是**同事 yin 那套集群（master 51053 + 128GiB client）共用的设备**，而本任务 Stage 1 的 C1/C4 与 Stage 5 的收口全走 IODie0。**独占判据按 CPU% 算，抓不住 UB 设备层的争用**（对方挂机不烧 CPU，但共享同一个 UB 引擎与端口）。做法：Stage 0 用 `ss -ltnp | grep 51053`、`pgrep -af mooncake` 列出占用者 PID/命令/CPU，**在本窗口内按 PID 精确停掉（用户已授权 node2/4 独占）**，记录 PID 与命令证据；停不掉 → C1/C4 与 Stage 5 的结论必须标注“共用 UB 设备”，并在报告里列为风险。
 - **target（node2）**：PID/启动参数（`--lcores`、`-s`、`--huge-dir`、`-N`、端口）、hugepages 在哪个 NUMA（`cat /sys/devices/system/node/node*/hugepages/hugepages-2048kB/nr_hugepages`）、listener、NoF 注册；**记录实际端口号**（后面所有命令都用它）。
 - **client（node4）**：bench 现有绑核、本地 UB 设备名、`numactl -H`；**能否切 `udmac1d1e2`、能否把 CPU 绑到 N2（154–237）**。注意 SPDK 的 `-c/-m` 是 64 位掩码，**表达不了 154 以上的核**：切 N2 时用 `--lcores=154,155,156,157` 或外层 `numactl -C 154-157`，并在 `arms.csv` 记实际绑核方式。
 - **GPU（node4）**：`nvidia-smi --query-gpu=name,pci.bus_id,clocks.mem --format=csv`、`cat /sys/bus/pci/devices/<V100 BDF>/numa_node`、`lspci -tv` 看它的根总线。**返回不是 0 就把 Stage 5 的跨 socket 分析按实测改写。**
@@ -7747,6 +7748,8 @@ MODULE_DESCRIPTION("clear pci_host_bridge.preserve_config (test harness)");
 | C4 | 全 N2 / N2 | `udmac0d1e2` | CPU N0 + `udmac0d1e2` |
 
 - 换盘＝vfio 解绑/绑定 + 重建 RAID0（**盘数固定 5**）；换网卡＝两端一起换，client 绑核跟着网卡走。
+- **执行顺序按"换盘次数最少"排：C1 → C3 → C4 → C2**（C1/C3 同一盘组只换 NIC；C3/C4 只换盘组；C4/C2 只换 NIC）。全阶段共 **2 次 RAID0 重建**，比按臂号顺序跑少一次（每次重建 + 重启 target 约 6–8 min）。
+- **能复用就复用**：任何一臂的配置若与前面某臂完全相同，直接引用 `arms.csv` 的那一行（标 `reused_from`），**不重跑**。
 - **C1 前后各跑一次控制臂**；漂移 >2% → 本阶段重跑。
 - **本阶段的 2×2 里盘与内存始终同 socket**，所以它只隔离"网卡跨"；"盘/内存跨"由 Stage 2 的混合盘组给出——报告里不许把两者混为一谈。
 - mem_numa 绑不到 N2 → C2/C4 标 BLOCKED，只做 C1/C3，结论写"只测了网卡跨 socket"。
@@ -7754,6 +7757,7 @@ MODULE_DESCRIPTION("clear pci_host_bridge.preserve_config (test harness)");
 ## 三、Stage 2：盘组混合（裸测，最佳对齐，strip128）
 
 - 全 N0、4N0+1N2、3N0+2N2、2N0+3N2、全 N2；每臂 **2×30 s**；盘数固定 5，逐盘记 BDF/root port。
+- **`mem_numa` 与 `nic_iodie` 本阶段全程钉死在 N0 / `udmac0d1e2`**（混合盘组下"最佳对齐"没有定义，只能钉住）。因此本阶段的"全 N2"= **盘在 N2、内存仍在 N0**，**不等于 Stage 1 的 C2**，报告里必须分开写，不许拿它和 C2 直接比。
 - 回答：是否必须全 N0；N2 盘占比到多少开始明显变慢（阈值）。
 
 ## 四、Stage 3：strip 扫描（裸测，最佳盘组）
@@ -7763,6 +7767,7 @@ MODULE_DESCRIPTION("clear pci_host_bridge.preserve_config (test harness)");
 ## 五、Stage 3b：盘×strip 交叉（关键，2 臂）
 
 - **全 N0 + strip64** 与 **全 N2 + strip128**（若 Stage 2/3 出现更极端组合，改取"最佳盘组×最差 strip"与"最差盘组×最佳 strip"）；每臂 2×30 s。
+- **先查能不能复用**：若 Stage 3 已经在全 N0 上跑过 64K（或 Stage 2 已跑过全 N2+128K），直接引用该臂（标 `reused_from`），不重跑；只有缺的臂才新跑。
 - 目的：把"换盘组 + 改 strip 一起动"的两个因素拆开——这是第一组 E3-BO 已证过的坑（42–47 µs 的差主要来自 strip 口径）。
 
 ## 六、Stage 4：reactor NUMA（裸测，最佳数据路径）
@@ -7788,6 +7793,15 @@ MODULE_DESCRIPTION("clear pci_host_bridge.preserve_config (test harness)");
 - Mooncake：query/read/total + get/scatter/copy（该 build 输出什么记什么；transfer/submit/wait 不输出就写"未输出"）、恒等式残差、failed、GiB/s。
 - 环境：load、可疑进程 `/proc/<pid>/stat` 的 utime+stime 增量与 CPU%（按《独占判定规范》），**回执首行给独占判定**。
 - 异常：原始日志保留并注明原因，不剔除。
+
+## 九b、判据与显著性（不写这个，agent 会把噪声当结论）
+
+- **同臂内**：两轮 30 s 的 avg 相差 **>2%** → 补第三轮，取三轮中位数并记全部三轮；≤2% → 取两轮中位数。
+- **臂间**：差值 **<2% 且 <5 µs** → 判"**无显著差异**"，不许写成"有影响"；≥2% 或 ≥5 µs → 才算差异，并给出 µs 数值与百分比。
+- **控制臂**：每阶段首尾各一次；首尾相差 **>2%** → 本阶段全部臂重跑，并记原因。
+- **纯链路控制臂（新增，成本 10 s）**：每阶段首尾各跑一条 `urma_perftest`（内存到内存、同 IODie），只用来判断 **UB 链路本身当轮是否漂移**。若链路控制臂稳定而盘读臂漂了 → 归因到盘/target 侧；若链路也跟着漂 → 整轮数据标注"链路不稳"，不进结论。
+- **failed≠0 或 completed 明显不足** → 该臂标 FAILED，不算数据，重试 1 次。
+- 所有判定按《独占判定规范》写进 `meta.md`，回执首行给独占结论。
 
 ## 十、产物 / 回执 / 时间
 
