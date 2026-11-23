@@ -1,6 +1,6 @@
 # 交接文件（单向：开发指挥 Agent → 测试执行 Agent）
 
-- 最后更新：2026-11-06
+- 最后更新：2026-11-23（新增 E3-DK：node2/4 相对位置测试）
 - 仓库：`https://github.com/liangxu2000/mooncake-nof-bench-handover`（public，可匿名拉取，无需凭据）
 - 首次：`git clone https://github.com/liangxu2000/mooncake-nof-bench-handover.git`
 - 之后每轮：`cd mooncake-nof-bench-handover && git pull`
@@ -7690,6 +7690,112 @@ MODULE_DESCRIPTION("clear pci_host_bridge.preserve_config (test harness)");
 - 纯整理，不重跑、不碰 node1/3；单位 µs；不改结构；用 `py -3`。
 - 产物 `关键结果\` xlsx + md + 备份；台账 §144；INDEX R107；五段式回执；~10 min。
 - 必给：两行改前/改后逐格值；其余 15 行未变证据；回读校验；前后 md5；c 16/1 用的 E3-DF 原始行（≤5 行）。
+
+---
+
+# E3-DK（待执行 · 2026-11-23）· node2/4：相对位置测试（盘位与 NUMA 对齐，Stage 0–6，stop at nothing）
+
+> **环境变更（2026-11-23 用户指令）**：用户已申请到 **node2/4 独占**，本实验改在 node2/4 执行。**node1/3 版 E3-DJ 原样保留"待排期"，不删不改**。这是同一实验的两个环境：**结论可迁移，绝对值不可跨环境比**，两套数据一律分开存、分开引用。
+> **角色**：node2 `141.61.84.247` = **target（SPDK NoF target）**；node4 `141.61.84.151` = **client（V100）**，历史记录上 mooncake_master 也在 node4。**实际进程拓扑以 Stage 0 实测为准，不许照抄历史。**
+> **实验名（用户命名）**：**相对位置测试**。结果目录：`测试相关资料\node1&3测试\关键结果\相对位置测试_node2_4_20261123\`（**只建这一个**；不要写进 `相对位置测试\`，那是 node1/3 的目录）。父目录 `node1&3测试` 只是 `关键结果` 的历史所在，**不是路径写错**，按原文放。
+> **设计依据**：`第八次测试方案_20261112.md`（本实验的 node2/4 原型）+ `盘位置与target对齐实验_node1_3版_20261116.md`（四处修正）+ `服务器物理拓扑_20261111.md`。测试侧若没有这三份，**以本任务书为准**。
+> **三个硬要求（从 node1/3 版带过来，不许退化）**：① 裸测必须端到端 `spdk_nvme_perf` **读到盘**（盘→target→UB→client 内存），纯 UB 的 `urma_perftest` 只作链路控制臂；② **必须有盘×strip 交叉臂**（Stage 3b），否则重犯"盘组和 strip 一起改"的错；③ 控制臂用 **node2/4 本机现测值**，不许拿 node1/3 的 181.9 或第一组历史的 176.6 顶替。
+
+## 〇、本环境与 node1/3 的差异（先读，别按 E3-DJ 的写法干）
+
+| 项 | node1/3（E3-DJ） | **node2/4（本任务）** |
+| --- | --- | --- |
+| target / client | node3 / node1（4090D） | **node2 / node4（V100）** |
+| BAR1 32G + HBM 锁 | 每次开机必做 | **不需要**（那套是 4090D 的 220 MiB peer 上限与 GeForce 显存降频问题）。但 Stage 0 用 `nvidia-smi -q -d CLOCK` 记一次时钟，**不许假设** |
+| GPU 位置 | node1 4090D 在 S0 | **node4 V100，从未测过，必须直读 `numa_node`** |
+| target 端口 | 4457 | **用该环境现有端口，Stage 0 现场读**。不要为了和 node1/3 统一而改端口——**改端口=引入新变量** |
+| N2 盘供给 | node3 只有 N0 5 块 | **node2 有 N2 6 块**（比 node1/3 宽）；全 N2 固定选 5 块（预期 `91,92,a1–a3`，`a4` 备用） |
+| 同事占用 | 他人 mooncake 组 | 同事 yin 的集群（master 51053 + 128GiB client，**共用 `udmac0d1e2`**）。用户已授权独占、"佛挡杀佛"，但**只许按 PID 精确停** |
+| 历史参考值 | E3-CR：d 1/1 transfer 181.9 / 总 448.79 µs | 第一组 N0+128K ≈ **176.6 / 630**（Mooncake 口径，**只作复现性对照，不作控制臂**） |
+
+## 〇b、无人值守 / 沙箱白名单（最高优先级，先读）
+
+- **绝不等待用户点击/确认**。遇"需要添加到白名单"、交互确认、密码提示 → **立即换路，不许停**。
+- 换路顺序：① 前几轮已成功用过的命令（`ls/cat/grep/ps/ss/lspci/lsblk/nvme/numactl/nvidia-smi/sudo -n`）与既有脚本；② 测试侧已有二进制/脚本（`spdk_nvme_perf`、`urma_perftest`、target/master/client 启动脚本）；③ `py -3`；④ 仍不行 → 该子步标 **BLOCKED**，跳过该臂/该阶段，**继续下一个**，写进 `blocked.md`。
+- 全 `sudo -n`、全非交互；**不 `pkill/killall`**（只按 PID）；不 kill 同事进程；不改源码；**不碰 node1/3**。
+- **红线：绝不 `rmmod udma`**（通用红线）。**整机重启默认禁止**；本任务不需要重启，也不许改 BIOS。
+- **每完成一臂立即写盘**：`arms.csv` 追加一行 + 原始日志落 `raw/` + 异常记 `blocked.md`，不许攒到最后。
+- 失败重试 1 次；仍失败标 FAILED 继续。异常轮保留日志，**不静默剔除**。
+- 时间不够时的优先级：**Stage 0 → Stage 1（4 臂）→ Stage 3b（2 臂）→ Stage 5（两配置）→ Stage 2 → Stage 3 → Stage 4 → Stage 6**。
+
+## 一、Stage 0：只读预检（30–40 min，不碰盘、不重建、不重启）
+
+- **盘（node2）**：`lspci -tv`、`ls -l /sys/block/nvme*`、`readlink -f /sys/block/nvmeXn1/device`、`lspci -s <BDF> -vv | grep -E 'Root Port|NUMA'`、`lsblk -o NAME,SIZE,MODEL,SERIAL`。列出每块盘的 root port / NUMA / 当前驱动（nvme 还是 vfio）/ 是否有人占用；确认 **N0 有 5 块**（预期 `21,22,28,29,2a` → `pci0000:20`）、**N2 有 ≥5 块**（预期 `91,92` → `pci0000:90`；`a1–a4` → `pci0000:a0`）。**盘归属不明或盘上有别人的数据 → 该盘不绑，标 BLOCKED。**
+- **NIC**：`ls /dev/uburma`、`ip -br link`、URMA 端口状态（沿用 E3-CY/E3-DA 的计数命令）。**node2 与 node4 都要看：`udmac0d1e2` 与 `udmac1d1e2` 是否都暴露、IODie1 的 P 口是否 ACTIVE、被谁连着。** 这是 C2/C3 的命门。
+- **target（node2）**：PID/启动参数（`--lcores`、`-s`、`--huge-dir`、`-N`、端口）、hugepages 在哪个 NUMA（`cat /sys/devices/system/node/node*/hugepages/hugepages-2048kB/nr_hugepages`）、listener、NoF 注册；**记录实际端口号**（后面所有命令都用它）。
+- **client（node4）**：bench 现有绑核、本地 UB 设备名、`numactl -H`；**能否切 `udmac1d1e2`、能否把 CPU 绑到 N2（154–237）**。注意 SPDK 的 `-c/-m` 是 64 位掩码，**表达不了 154 以上的核**：切 N2 时用 `--lcores=154,155,156,157` 或外层 `numactl -C 154-157`，并在 `arms.csv` 记实际绑核方式。
+- **GPU（node4）**：`nvidia-smi --query-gpu=name,pci.bus_id,clocks.mem --format=csv`、`cat /sys/bus/pci/devices/<V100 BDF>/numa_node`、`lspci -tv` 看它的根总线。**返回不是 0 就把 Stage 5 的跨 socket 分析按实测改写。**
+- **裸测工具 10 s 冒烟**：
+  `spdk_nvme_perf -q 1 -o 4M -w read -t 10 --lcores=<client核> -LL --iova-mode=va -r 'trtype:URMA adrfam:IPv4 traddr:141.61.84.247 trsvcid:<target端口> subnqn:<nqn>'`
+  失败 → 记录命令与报错，找 SPDK 端到端替代（`urma_perf` 连 target 的 NVMe-oF 路径）；都不可用 → 降级用 Mooncake d 1/1 筛选（每次换盘要重灌 keys，时间×3，记录代价）。
+- **client 侧换 IODie 的可行方式**：Stage 0 必须先确定（`-r` 本地设备参数 / 环境变量 / 驱动默认选择）。Mooncake 侧有 `MC_EID_INDEX`（仓库 commit `523256d` "fix(ub): honor MC_EID_INDEX when selecting URMA context"）；**裸测 `spdk_nvme_perf` 是否支持同类选择需现场确认**。若 client 无法指定本地 UB 设备 → C2/C3 标 BLOCKED，退化为"只换 target 侧网卡"，并在结论里写明。
+- **控制臂基线**：node2/4 现配置（全 N0 + strip128 + IODie0 + reactor 现状），端到端裸测 **2×30 s**，落盘。**必须是本机现测值。**
+- **输出**：盘 BDF/root port/NUMA 表、可用 N2 盘清单、NIC 状态、target 参数与端口、GPU 位置、裸测可用性、换 IODie 的方法、控制臂基线。**缺项标 BLOCKED，不猜。**
+
+## 二、Stage 1：socket 对齐 2×2（裸测，固定 strip128、5 盘、每臂 2×30 s）
+
+| 臂 | 盘/内存 | target NIC | client |
+| --- | --- | --- | --- |
+| C1 | 全 N0 / N0 | `udmac0d1e2`（IODie0） | CPU N0 + `udmac0d1e2`（**控制臂**） |
+| C2 | 全 N2 / N2 | `udmac1d1e2`（IODie1） | CPU N2 + `udmac1d1e2` |
+| C3 | 全 N0 / N0 | `udmac1d1e2` | CPU N2 + `udmac1d1e2` |
+| C4 | 全 N2 / N2 | `udmac0d1e2` | CPU N0 + `udmac0d1e2` |
+
+- 换盘＝vfio 解绑/绑定 + 重建 RAID0（**盘数固定 5**）；换网卡＝两端一起换，client 绑核跟着网卡走。
+- **C1 前后各跑一次控制臂**；漂移 >2% → 本阶段重跑。
+- **本阶段的 2×2 里盘与内存始终同 socket**，所以它只隔离"网卡跨"；"盘/内存跨"由 Stage 2 的混合盘组给出——报告里不许把两者混为一谈。
+- mem_numa 绑不到 N2 → C2/C4 标 BLOCKED，只做 C1/C3，结论写"只测了网卡跨 socket"。
+
+## 三、Stage 2：盘组混合（裸测，最佳对齐，strip128）
+
+- 全 N0、4N0+1N2、3N0+2N2、2N0+3N2、全 N2；每臂 **2×30 s**；盘数固定 5，逐盘记 BDF/root port。
+- 回答：是否必须全 N0；N2 盘占比到多少开始明显变慢（阈值）。
+
+## 四、Stage 3：strip 扫描（裸测，最佳盘组）
+
+- 64/128/256/512K；每臂 2×30 s；记录 iostat 的 `ops/req`（4MB/strip：64K→64、128K→32、256K→16、512K→8）与 5 盘分布；**不跨 strip 比 ops/req**。
+
+## 五、Stage 3b：盘×strip 交叉（关键，2 臂）
+
+- **全 N0 + strip64** 与 **全 N2 + strip128**（若 Stage 2/3 出现更极端组合，改取"最佳盘组×最差 strip"与"最差盘组×最佳 strip"）；每臂 2×30 s。
+- 目的：把"换盘组 + 改 strip 一起动"的两个因素拆开——这是第一组 E3-BO 已证过的坑（42–47 µs 的差主要来自 strip 口径）。
+
+## 六、Stage 4：reactor NUMA（裸测，最佳数据路径）
+
+- reactor 放 N0 / N2；**只重启 target，不重建 RAID0**；每臂 2×30 s。确认 reactor 只是控制面；若变化很大，查是否与网卡/内存争用。
+
+## 七、Stage 5：Mooncake 收口（两配置）
+
+- **配置①裸测最优；配置②C1 全 S0**（若相同只跑一次）。GPU 在 client 侧 node4，GDR 写可能跨 socket，**两套必须都跑，不能把裸测最优直接当 Mooncake 最优**。
+- c/d：1/1、1/16、16/1、16/16，各 **3×60 s**；c `reg_mode=peer`、d `flag=false`；**每次重建 RAID0 后必须重新 prefill**。
+- **prefill 口径按第一组已定稿的三张表（`benchmark_Mooncake_4MB_顺序读.xlsx` 等）同一口径**；keys 数、value_size、warmup、sleep 一律从现有脚本/env 读出并写进 `meta.md`，**不许臆造**。
+- **进程顺序硬规（E3-DI 实证，通用）**：重建 target → **重启 master** → **强制重启 client** → NoF 重注册 → 重灌 keys。若 node2/4 上也重建过 target，必须走这条链，否则旧 client 的 peer-memory 映射失效（`urma_endpoint.cpp:731` → qpair rc=-104，prefill 大面积失败）。master 端口/心跳参数**按 node2/4 现场实际值写**，不要照抄 node1/3 的 50056/9006/8086 与 120/5。
+- 对照：node2/4 控制臂（本机现测）+ 第一组历史 N0+128K ≈ 176.6/630（仅判断复现性）。
+
+## 八、Stage 6（可选，仅前面全部完成且时间够）
+
+- 若 16/16 仍卡在同一吞吐：试 IODie1 / 其他 P 口 / qpair，验证是否单 IODie/端口上限。
+
+## 九、每臂记录（`arms.csv` 一行一臂）
+
+- 配置：`disk_socket`（逐盘 BDF/root port）、`strip`、`mem_numa`、`nic_iodie`、`reactor_numa`、`client_align`（CPU 核段/绑核方式/本地 UB 设备/GPU 是否同 socket）、target/client PID、target 端口、NQN。
+- 裸测：avg/P50/P90/P99/P99.9/Pmax（µs）、GiB/s、completed、错误数、target bdev iostat（ops/req、5 盘分布）、reactor CPU。
+- Mooncake：query/read/total + get/scatter/copy（该 build 输出什么记什么；transfer/submit/wait 不输出就写"未输出"）、恒等式残差、failed、GiB/s。
+- 环境：load、可疑进程 `/proc/<pid>/stat` 的 utime+stime 增量与 CPU%（按《独占判定规范》），**回执首行给独占判定**。
+- 异常：原始日志保留并注明原因，不剔除。
+
+## 十、产物 / 回执 / 时间
+
+- 测试侧 `关键结果\相对位置测试_node2_4_20261123\`：`结果_相对位置测试_node2_4_20261123.md`（一页结论 + 全表 + 每阶段控制臂漂移）、`arms.csv`、`meta.md`、`blocked.md`、`raw/`。
+- 台账 **§147**；INDEX **R110**；五段式回执。
+- 必给：**盘 socket / strip / NIC IODie / reactor / mem NUMA 各自的影响（µs 与是否显著）**、推荐配置、哪些臂 BLOCKED 及原因、Stage 5 两配置对比、**GPU 是否跨 socket 的实测证据**、对后续全量测试的建议。
+- 另必给一条边界声明：**本结果是 node2/4（V100）上的机理结论；若要用它改 node1/3（4090D）的 target 摆法，必须在 node1/3 上复核至少 c/d 1/1 一格 + 控制臂。**
+- 时间：Stage 0 30–40 min + Stage 1–5 约 3.5–4 h，合计 **4–5 h**；建议 Stage 0–4 一个窗口、Stage 5 一个窗口。**用户放行后按实际窗口截断，按上面优先级取舍，结果先落盘再继续。**
 
 ---
 
