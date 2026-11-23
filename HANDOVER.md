@@ -7727,6 +7727,18 @@ MODULE_DESCRIPTION("clear pci_host_bridge.preserve_config (test harness)");
 - 失败重试 1 次；仍失败标 FAILED 继续。异常轮保留日志，**不静默剔除**。
 - 时间不够时的优先级：**Stage 0 → Stage 1（4 臂）→ Stage 3b（2 臂）→ Stage 5（两配置）→ Stage 2 → Stage 3 → Stage 4 → Stage 6**。
 
+## 〇c、执行入口与连通性（开跑前第一件事，不通就别往下做）
+
+- **一律用 IP，禁止裸主机名**：历史教训——裸 `node1`/`node3` 会解析到另外两台机器（`10.171.216.136` / `10.171.217.126`）。本任务统一写 `141.61.84.247`（node2）与 `141.61.84.151`（node4），脚本里也不许出现裸名。
+- **三条连通性预检（非交互，先做）**：
+  - `ssh -o BatchMode=yes -o ConnectTimeout=5 <user>@141.61.84.247 'hostname; uptime; who -b'`
+  - `ssh -o BatchMode=yes -o ConnectTimeout=5 <user>@141.61.84.151 'hostname; uptime; who -b'`
+  - 本机（执行 agent 所在机器）`hostname` + 能否免密到上面两台。
+  - 登录用户按测试侧既有脚本/历史（node 上是 `root`）；**若需密码或要交互确认 → 视为不通**，不要试密码、不要等人点确认。
+- **两侧分工**：node2 采 target 侧（bdev iostat、listener、hugepages、盘 BDF/root port）；node4 采 client 侧（bench 进程、绑核、本地 UB 设备、`nvidia-smi`、GPU `numa_node`）。**一个臂的完整记录要两边都有数据才算数。**
+- **`who -b` 必记**：留作"是否被第三方重启过"的证据（node1/3 有过 17:15 被整机重启、BAR1 回退的事故）。开机时间与本轮不符 → 先查原因再开跑。
+- 任一节点 SSH 不通 → **标 BLOCKED 并回报**，不许猜、不许换机、不许只在一台上跑半套。
+
 ## 一、Stage 0：只读预检（30–40 min，不碰盘、不重建、不重启）
 
 - **盘（node2）**：`lspci -tv`、`ls -l /sys/block/nvme*`、`readlink -f /sys/block/nvmeXn1/device`、`lspci -s <BDF> -vv | grep -E 'Root Port|NUMA'`、`lsblk -o NAME,SIZE,MODEL,SERIAL`。列出每块盘的 root port / NUMA / 当前驱动（nvme 还是 vfio）/ 是否有人占用；确认 **N0 有 5 块**（预期 `21,22,28,29,2a` → `pci0000:20`）、**N2 有 ≥5 块**（预期 `91,92` → `pci0000:90`；`a1–a4` → `pci0000:a0`）。**盘归属不明或盘上有别人的数据 → 该盘不绑，标 BLOCKED。**
