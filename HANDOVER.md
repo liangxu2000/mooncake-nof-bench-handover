@@ -60,6 +60,9 @@
 
 - **用户确认 node2/node4 独占使用**：同事 yin 在 node2/node4 起的集群（master 51053 + 128GiB client，共用 `udmac0d1e2`）只是起了没跑；用户原话“**要是有人干扰那就佛挡杀佛**”。
 - 后续 node2/4 任务按独占判定执行；若可疑进程 >5% 单核且确有实际资源占用，**可按 PID 精确停止**（先记录命令/PID/证据，不用 `pkill`），回执写明；≤1% 空转不影响，不动。
+- **2026-11-23 强化（优先级最高，覆盖上一条的分级）**：用户原话“**现在 node2/4 是我们独占，不需要考虑别人，佛挡杀佛**”。即 **node2/4 上的任何非我方进程一律清场**，不再看 CPU% 高低、不再区分“空转/真占用”、不再权衡：`mooncake_*`、`nvmf_tgt`、`spdk_*`、bench、编译、用户起的容器/虚拟机占的盘，**按 PID 先 TERM、10 s 不退出再 KILL**，记录 PID/命令行/CPU 证据即可，**不需要因此降级结论**。
+  - 仍守的机器安全红线（防挂机，不是对人有礼）：**不 `pkill/killall`、不碰 sshd/systemd/网络/kubelet/容器运行时、不重启整机、绝不 `rmmod udma`**。若某进程属于上述系统服务，记录后绕过（换端口/换盘），不停它。
+  - 停不掉或属系统服务 → 该臂标 BLOCKED 并记录，**继续下一个臂**，不停工。
 - 该授权仅限 node2/node4；node1/node3 仍按原规则（有他人业务先回报）。
 
 ### 交付表命名（2026-11-12）
@@ -7696,6 +7699,7 @@ MODULE_DESCRIPTION("clear pci_host_bridge.preserve_config (test harness)");
 # E3-DK（待执行 · 2026-11-23）· node2/4：相对位置测试（盘位与 NUMA 对齐，Stage 0–6，stop at nothing）
 
 > **环境变更（2026-11-23 用户指令）**：用户已申请到 **node2/4 独占**，本实验改在 node2/4 执行。**node1/3 版 E3-DJ 原样保留"待排期"，不删不改**。这是同一实验的两个环境：**结论可迁移，绝对值不可跨环境比**，两套数据一律分开存、分开引用。
+> **独占（2026-11-23 用户强调，优先级最高）**：**node2/4 现在是我们独占，不需要考虑别人，佛挡杀佛。** 开跑前把 node2/4 上任何非我方进程（mooncake / nvmf_tgt / spdk / bench / 编译 / 占盘的容器）按 PID 清干净（TERM → 10 s → KILL，记证据），**不要为了“不打扰别人”而降级任何臂、加任何风险标注、或跳过任何阶段**。机器安全红线仍守：不 `pkill/killall`、不碰 sshd/systemd/网络/kubelet/容器运行时、不重启整机、绝不 `rmmod udma`。
 > **角色**：node2 `141.61.84.247` = **target（SPDK NoF target）**；node4 `141.61.84.151` = **client（V100）**，历史记录上 mooncake_master 也在 node4。**实际进程拓扑以 Stage 0 实测为准，不许照抄历史。**
 > **实验名（用户命名）**：**相对位置测试**。结果目录：`测试相关资料\node1&3测试\关键结果\相对位置测试_node2_4_20261123\`（**只建这一个**；不要写进 `相对位置测试\`，那是 node1/3 的目录）。父目录 `node1&3测试` 只是 `关键结果` 的历史所在，**不是路径写错**，按原文放。
 > **设计依据**：`第八次测试方案_20261112.md`（本实验的 node2/4 原型）+ `盘位置与target对齐实验_node1_3版_20261116.md`（四处修正）+ `服务器物理拓扑_20261111.md`。测试侧若没有这三份，**以本任务书为准**。
@@ -7710,7 +7714,7 @@ MODULE_DESCRIPTION("clear pci_host_bridge.preserve_config (test harness)");
 | GPU 位置 | node1 4090D 在 S0 | **node4 V100，从未测过，必须直读 `numa_node`** |
 | target 端口 | 4457 | **用该环境现有端口，Stage 0 现场读**。不要为了和 node1/3 统一而改端口——**改端口=引入新变量** |
 | N2 盘供给 | node3 只有 N0 5 块 | **node2 有 N2 6 块**（比 node1/3 宽）；全 N2 固定选 5 块（预期 `91,92,a1–a3`，`a4` 备用） |
-| 同事占用 | 他人 mooncake 组 | 同事 yin 的集群（master 51053 + 128GiB client，**共用 `udmac0d1e2`**）。用户已授权独占、"佛挡杀佛"，但**只许按 PID 精确停** |
+| 同事占用 | 他人 mooncake 组 | **node2/4 已独占（用户 2026-11-23：“佛挡杀佛，不需要考虑别人”）**：`udmac0d1e2` 上任何非我方进程（含同事 yin 的 master 51053 + 128GiB client）**开跑前一律按 PID 清场**，不用权衡、不用降级结论 |
 | 历史参考值 | E3-CR：d 1/1 transfer 181.9 / 总 448.79 µs | 第一组 N0+128K ≈ **176.6 / 630**（Mooncake 口径，**只作复现性对照，不作控制臂**） |
 
 ## 〇b、无人值守 / 沙箱白名单（最高优先级，先读）
@@ -7727,7 +7731,7 @@ MODULE_DESCRIPTION("clear pci_host_bridge.preserve_config (test harness)");
 
 - **盘（node2）**：`lspci -tv`、`ls -l /sys/block/nvme*`、`readlink -f /sys/block/nvmeXn1/device`、`lspci -s <BDF> -vv | grep -E 'Root Port|NUMA'`、`lsblk -o NAME,SIZE,MODEL,SERIAL`。列出每块盘的 root port / NUMA / 当前驱动（nvme 还是 vfio）/ 是否有人占用；确认 **N0 有 5 块**（预期 `21,22,28,29,2a` → `pci0000:20`）、**N2 有 ≥5 块**（预期 `91,92` → `pci0000:90`；`a1–a4` → `pci0000:a0`）。**盘归属不明或盘上有别人的数据 → 该盘不绑，标 BLOCKED。**
 - **NIC**：`ls /dev/uburma`、`ip -br link`、URMA 端口状态（沿用 E3-CY/E3-DA 的计数命令）。**node2 与 node4 都要看：`udmac0d1e2` 与 `udmac1d1e2` 是否都暴露、IODie1 的 P 口是否 ACTIVE、被谁连着。** 这是 C2/C3 的命门。
-- **UB 设备占用（本任务最容易被忽略的一条）**：`udmac0d1e2` 是**同事 yin 那套集群（master 51053 + 128GiB client）共用的设备**，而本任务 Stage 1 的 C1/C4 与 Stage 5 的收口全走 IODie0。**独占判据按 CPU% 算，抓不住 UB 设备层的争用**（对方挂机不烧 CPU，但共享同一个 UB 引擎与端口）。做法：Stage 0 用 `ss -ltnp | grep 51053`、`pgrep -af mooncake` 列出占用者 PID/命令/CPU，**在本窗口内按 PID 精确停掉（用户已授权 node2/4 独占）**，记录 PID 与命令证据；停不掉 → C1/C4 与 Stage 5 的结论必须标注“共用 UB 设备”，并在报告里列为风险。
+- **UB 设备占用（开跑前必须清干净的一条）**：`udmac0d1e2` 上有同事 yin 那套集群（master 51053 + 128GiB client），而本任务 Stage 1 的 C1/C4 与 Stage 5 的收口全走 IODie0。**独占判据按 CPU% 算，抓不住 UB 设备层的争用**（对方挂机不烧 CPU，但共享同一个 UB 引擎与端口）。做法：`ss -ltnp | grep 51053`、`pgrep -af 'mooncake|nvmf_tgt|spdk|stress_cluster_bench'` 列出全部非我方 PID/命令，**按 PID 先 TERM、10 s 不退出再 KILL，全部停掉后才开跑**（node2/4 已独占，用户 2026-11-23 明确“佛挡杀佛，不需要考虑别人”）；记录 PID/命令/CPU 证据到 `meta.md`。**不许因为“怕影响别人”而带着共用设备开跑。**
 - **target（node2）**：PID/启动参数（`--lcores`、`-s`、`--huge-dir`、`-N`、端口）、hugepages 在哪个 NUMA（`cat /sys/devices/system/node/node*/hugepages/hugepages-2048kB/nr_hugepages`）、listener、NoF 注册；**记录实际端口号**（后面所有命令都用它）。
 - **client（node4）**：bench 现有绑核、本地 UB 设备名、`numactl -H`；**能否切 `udmac1d1e2`、能否把 CPU 绑到 N2（154–237）**。注意 SPDK 的 `-c/-m` 是 64 位掩码，**表达不了 154 以上的核**：切 N2 时用 `--lcores=154,155,156,157` 或外层 `numactl -C 154-157`，并在 `arms.csv` 记实际绑核方式。
 - **GPU（node4）**：`nvidia-smi --query-gpu=name,pci.bus_id,clocks.mem --format=csv`、`cat /sys/bus/pci/devices/<V100 BDF>/numa_node`、`lspci -tv` 看它的根总线。**返回不是 0 就把 Stage 5 的跨 socket 分析按实测改写。**
@@ -7801,7 +7805,7 @@ MODULE_DESCRIPTION("clear pci_host_bridge.preserve_config (test harness)");
 - **控制臂**：每阶段首尾各一次；首尾相差 **>2%** → 本阶段全部臂重跑，并记原因。
 - **纯链路控制臂（新增，成本 10 s）**：每阶段首尾各跑一条 `urma_perftest`（内存到内存、同 IODie），只用来判断 **UB 链路本身当轮是否漂移**。若链路控制臂稳定而盘读臂漂了 → 归因到盘/target 侧；若链路也跟着漂 → 整轮数据标注"链路不稳"，不进结论。
 - **failed≠0 或 completed 明显不足** → 该臂标 FAILED，不算数据，重试 1 次。
-- 所有判定按《独占判定规范》写进 `meta.md`，回执首行给独占结论。
+- 所有判定按《独占判定规范》写进 `meta.md`，**回执首行给独占结论**。本窗口的期望结论是“**独占（已清场）**”；若测量窗口内仍出现非我方进程 → **立即停掉该进程、该臂重跑**，不许记成“未确认”或“有干扰”了事。
 
 ## 十、产物 / 回执 / 时间
 
